@@ -358,3 +358,12 @@ pub fn reference_distances(board: &Board, sources: Bitboard, king: bool) -> [u8;
     }
     dist
 }
+
+/// The two sides can no longer reach any common square: the game is decided
+/// by counting (filling) each side's own region.
+pub fn regions_separated(board: &Board) -> bool {
+    let occ = board.occupied();
+    let a = queen_levels(board.amazons[0], occ).reached;
+    let b = queen_levels(board.amazons[1], occ).reached;
+    a & b == 0
+}

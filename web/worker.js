@@ -1,6 +1,6 @@
 // Owns the single engine instance. The UI thread never calls WASM directly,
 // so engine work (search) can never freeze the page.
-import init, { Game } from './pkg/amazons_engine.js';
+import init, { Game, explain_move } from './pkg/amazons_engine.js';
 
 let game = null;
 const ready = init().then(() => {
@@ -60,6 +60,28 @@ const handlers = {
     if (kind === 'random') return play(game.random_move());
     if (kind === 'greedy') return play(game.greedy_move());
     return false;
+  },
+  // Replace the game with a flat [from, to, arrow, ...] move list.
+  load({ history }) {
+    if (!game.load_history(new Uint8Array(history))) throw new Error('잘못된 수순');
+    return true;
+  },
+  // Load a game from notation text ("d1-d7(g7) a7-...", move numbers and
+  // extra whitespace are ignored). Stops at the first unreadable move.
+  loadNotation({ text }) {
+    game.reset();
+    const tokens = text.replace(/\d+\.(?!\d)/g, ' ').split(/[\s,]+/).filter(Boolean);
+    let n = 0;
+    for (const t of tokens) {
+      if (!game.play_notation(t)) return { played: n, failed: t };
+      n++;
+    }
+    return { played: n, failed: null };
+  },
+  explain({ history, ply, best, reply, pBefore, pAfter }) {
+    return JSON.parse(
+      explain_move(new Uint8Array(history), ply, new Uint8Array(best || []), new Uint8Array(reply || []), pBefore, pAfter),
+    );
   },
   // Search without playing. Helper workers pass `history` to load the
   // position first; the engine worker searches its own game.

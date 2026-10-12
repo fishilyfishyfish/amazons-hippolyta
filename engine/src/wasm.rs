@@ -276,3 +276,42 @@ impl Game {
         )
     }
 }
+
+/// Explains move number `ply` (0-based) of the flat `history`
+/// (`[from, to, arrow, ...]`). `best` is the engine's recommended move in the
+/// position before it and `reply` its best answer in the position after it
+/// (`[from, to, arrow]` or empty); `p_before` / `p_after`
+/// are the mover's win probabilities before (with best play) and after the
+/// move. Returns JSON (see `Explanation::to_json`), or `null` on bad input.
+#[wasm_bindgen]
+pub fn explain_move(
+    history: &[u8],
+    ply: u32,
+    best: &[u8],
+    reply: &[u8],
+    p_before: f32,
+    p_after: f32,
+) -> String {
+    let ply = ply as usize;
+    if history.len() < 3 * (ply + 1) {
+        return "null".into();
+    }
+    let mut board = Board::new();
+    for m in history[..3 * ply].chunks_exact(3) {
+        let m = Move::new(m[0], m[1], m[2]);
+        if !board.is_legal(m) {
+            return "null".into();
+        }
+        board.make_move(m);
+    }
+    let h = &history[3 * ply..3 * ply + 3];
+    let played = Move::new(h[0], h[1], h[2]);
+    if !board.is_legal(played) {
+        return "null".into();
+    }
+    let best = (best.len() == 3)
+        .then(|| Move::new(best[0], best[1], best[2]))
+        .filter(|m| board.is_legal(*m));
+    let reply = (reply.len() == 3).then(|| Move::new(reply[0], reply[1], reply[2]));
+    crate::explain::explain(&board, played, best, reply, p_before, p_after).to_json()
+}

@@ -19,6 +19,18 @@ const els = {
   evalFill: document.getElementById('evalFill'),
   evalText: document.getElementById('evalText'),
   aiInfo: document.getElementById('aiInfo'),
+  analysisPanel: document.getElementById('analysisPanel'),
+  prev: document.getElementById('prev'),
+  next: document.getElementById('next'),
+  showBest: document.getElementById('showBest'),
+  posInfo: document.getElementById('posInfo'),
+  graph: document.getElementById('graph'),
+  explain: document.getElementById('explain'),
+  analyzeAll: document.getElementById('analyzeAll'),
+  exportKibo: document.getElementById('exportKibo'),
+  importKibo: document.getElementById('importKibo'),
+  kiboText: document.getElementById('kiboText'),
+  kiboMsg: document.getElementById('kiboMsg'),
 };
 
 // ---- worker RPC -----------------------------------------------------------
@@ -60,9 +72,10 @@ const onProgress = (i) => (info) => {
 };
 const call = createWorker(onProgress(0));
 const helpers = [];
-function getHelpers() {
-  while (helpers.length < SEARCHERS - 1) helpers.push(createWorker(onProgress(helpers.length + 1)));
-  return helpers;
+function getHelpers(min = 0) {
+  const want = Math.max(min, SEARCHERS - 1);
+  while (helpers.length < want) helpers.push(createWorker(onProgress(helpers.length + 1)));
+  return helpers.slice(0, want);
 }
 
 // Merge root statistics of independent searches: visits add up, values are
@@ -132,8 +145,9 @@ function setState(s) {
   sel = { from: -1, to: -1 };
 }
 
+const isAnalysis = () => settings.opponent === 'analysis';
 const isHumanTurn = () =>
-  state && !state.over && (settings.opponent === 'human' || state.side === settings.human);
+  state && !state.over && (settings.opponent === 'human' || isAnalysis() || state.side === settings.human);
 
 async function run(type, args) {
   busy = true;
@@ -171,12 +185,18 @@ async function maybeAiTurn() {
   maybeAiTurn();
 }
 
-async function parallelSearch(ms) {
+// Searches `history` (default: the current position) with every searcher.
+// The engine worker only joins when the position is its own current game,
+// so analysing an earlier position never disturbs the game.
+async function parallelSearch(ms, history = null) {
   progress.fill(null);
-  const history = Array.from(state.history);
-  const jobs = [call('search', { ms, seed: 0, jitter: 0 })];
-  getHelpers().forEach((h, i) =>
-    jobs.push(h('search', { ms, history, seed: 1 + i + Math.floor(Math.random() * 1e9), jitter: 0.5 })),
+  const current = history === null || sameHistory(history, state.history);
+  if (history === null) history = Array.from(state.history);
+  const jobs = current ? [call('search', { ms, seed: 0, jitter: 0 })] : [];
+  getHelpers(current ? 0 : 1).forEach((h, i) =>
+    jobs.push(
+      h('search', { ms, history, seed: 1 + i + Math.floor(Math.random() * 1e9), jitter: current || i > 0 ? 0.5 : 0 }),
+    ),
   );
   try {
     const results = await Promise.all(jobs);
@@ -190,6 +210,7 @@ async function parallelSearch(ms) {
 }
 
 const pct = (v) => Math.round(50 * (v + 1)) + '%';
+const sameHistory = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 function showAiInfo(info, live) {
   if (!info) {
@@ -224,7 +245,7 @@ function buildBoard() {
 // Visual position i -> square, with the human's side at the bottom.
 function squareAt(i) {
   const vr = Math.floor(i / 10), vc = i % 10;
-  const flip = settings.opponent !== 'human' && settings.human === 1;
+  const flip = isFlipped();
   const row = flip ? vr : 9 - vr;
   const col = flip ? 9 - vc : vc;
   return row * 10 + col;
@@ -249,7 +270,11 @@ function render() {
     targetClass = 't-move';
   }
   const human = isHumanTurn() && !busy;
-  const flip = settings.opponent !== 'human' && settings.human === 1;
+  const flip = isFlipped();
+  const ex = isAnalysis() && sel.from < 0 ? currentExplanation() : null;
+  const gained = new Set(ex ? ex.gained : []);
+  const lost = new Set(ex ? ex.lost : []);
+  const hintMove = isAnalysis() && showBest && sel.from < 0 ? currentBestMove() : null;
   const heatOn = els.heat.checked;
 
   for (let i = 0; i < 100; i++) {
@@ -278,6 +303,13 @@ function render() {
     if (sq === sel.to) cls.push('selected');
     if (sq === sel.from && sel.to >= 0) cls.push('vacated');
     if (targets && targets.has(sq)) cls.push('target', targetClass);
+    if (v === 0 && gained.has(sq)) cls.push('chg-gain');
+    if (v === 0 && lost.has(sq)) cls.push('chg-loss');
+    if (hintMove) {
+      if (sq === hintMove[0]) cls.push('hint-from');
+      if (sq === hintMove[1]) cls.push('hint-to');
+      if (sq === hintMove[2]) cls.push('hint-arrow');
+    }
     if (human && sel.from < 0 && tree.has(sq)) cls.push('movable');
     el.className = cls.join(' ');
     // Coordinates on the edge squares.
@@ -290,6 +322,7 @@ function render() {
   renderStatus();
   renderEval();
   renderMoves();
+  renderAnalysis();
   els.undo.disabled = busy || undoCount() === 0;
   els.cancel.disabled = sel.from < 0;
 }
@@ -329,7 +362,7 @@ function renderStatus() {
   if (s.over) {
     text = `게임 종료 — ${colorName(s.winner)} 승리 (${colorName(s.side)}이 둘 곳이 없음)`;
   } else if (isHumanTurn()) {
-    const who = settings.opponent === 'human' ? '' : ' (당신)';
+    const who = settings.opponent === 'human' || isAnalysis() ? '' : ' (당신)';
     text = `${colorName(s.side)} 차례${who} · 합법수 ${s.legal.length / 3}개`;
     hint = sel.to >= 0 ? '화살을 쏠 칸을 고르세요.'
       : sel.from >= 0 ? '이동할 칸을 고르세요.'
@@ -338,11 +371,13 @@ function renderStatus() {
     const name = els.opponent.selectedOptions[0].textContent;
     text = `${colorName(s.side)} (${name}) 생각 중…`;
   }
+  if (isAnalysis() && analyzingNow) hint = '분석 중…';
   els.status.textContent = text;
   els.hint.textContent = hint;
 }
 
 function renderMoves() {
+  if (isAnalysis()) return renderLine();
   const n = state.notation;
   const rows = [];
   for (let i = 0; i < n.length; i += 2) {
@@ -372,7 +407,8 @@ function onCell(sq) {
     // Arrow stage.
     if (tree.get(sel.from).get(sel.to).has(sq)) {
       const move = [sel.from, sel.to, sq];
-      run('play', { move }).then(maybeAiTurn);
+      if (isAnalysis()) playInAnalysis(move);
+      else run('play', { move }).then(maybeAiTurn);
     } else if (sq === sel.to) {
       sel.to = -1; // tap the moved amazon again to take the step back
       render();
@@ -394,7 +430,7 @@ function onCell(sq) {
 function undoCount() {
   if (!state) return 0;
   const plies = state.history.length / 3;
-  if (settings.opponent === 'human') return plies > 0 ? 1 : 0;
+  if (settings.opponent === 'human' || isAnalysis()) return plies > 0 ? 1 : 0;
   // Ply i (0-based) was played by colour i % 2.
   for (let i = plies - 1; i >= 0; i--) {
     if (i % 2 === settings.human) return plies - i;
@@ -403,6 +439,7 @@ function undoCount() {
 }
 
 els.undo.addEventListener('click', async () => {
+  if (isAnalysis()) return navigate(state.history.length / 3 - 1);
   const count = undoCount();
   if (!count) return;
   epoch++;
@@ -425,10 +462,17 @@ async function newGame() {
   settings.human = Number(els.color.value);
   lastAiInfo = null;
   showAiInfo(null);
-  els.color.disabled = settings.opponent === 'human';
+  els.color.disabled = settings.opponent === 'human' || isAnalysis();
+  els.analysisPanel.hidden = !isAnalysis();
+  els.undo.textContent = isAnalysis() ? '한 수 뒤로' : '무르기';
+  line = [];
+  analysisCache.clear();
+  explainCache.clear();
+  analysisToken++;
   epoch++;
   await run('newGame');
-  maybeAiTurn();
+  if (isAnalysis()) ensureAnalyzed();
+  else maybeAiTurn();
 }
 
 els.newGame.addEventListener('click', newGame);
@@ -436,15 +480,366 @@ els.opponent.addEventListener('change', newGame);
 els.color.addEventListener('change', newGame);
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') els.cancel.click();
+  if (e.target instanceof HTMLTextAreaElement) return;
+  if (isAnalysis() && e.key === 'ArrowLeft') els.prev.click();
+  else if (isAnalysis() && e.key === 'ArrowRight') els.next.click();
+  else if (e.key === 'Escape') els.cancel.click();
   else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
     e.preventDefault();
     els.undo.click();
   }
 });
 
+
+// ---- analysis mode --------------------------------------------------------
+//
+// The user plays both sides. Every position reached is searched once
+// (ANALYSIS_MS, all workers); a move is then explained from the search of
+// the position before it (best move, win chance with best play) and the one
+// after it (win chance after the move, the opponent's best reply).
+
+const ANALYSIS_MS = 1000;
+let line = [];                    // full move line [[f,t,a], ...] (may run past the current ply)
+const analysisCache = new Map();  // history key -> combined search info
+const explainCache = new Map();   // history key (through the move) -> explanation
+let analysisToken = 0;
+let analyzingNow = false;
+let showBest = false;
+const GRADE_MARK = { best: '', good: '', inaccuracy: '?!', mistake: '?', blunder: '??' };
+
+const flat = (moves) => moves.flat();
+const hkey = (hist) => Array.from(hist).join(',');
+const moveName = (m) => `${sqName(m[0])}-${sqName(m[1])}(${sqName(m[2])})`;
+const isFlipped = () => !isAnalysis() && settings.opponent !== 'human' && settings.human === 1;
+
+function plyOf() {
+  return state.history.length / 3;
+}
+
+// Mover's win probability from a combined search info (White's view).
+function moverP(info, mover) {
+  const v = info.proven ? info.proven : info.value;
+  const pw = (v + 1) / 2;
+  return mover === 0 ? pw : 1 - pw;
+}
+
+function currentExplanation() {
+  if (!state || plyOf() === 0) return null;
+  return explainCache.get(hkey(state.history)) || null;
+}
+
+function currentBestMove() {
+  const info = analysisCache.get(hkey(state.history));
+  return info && info.best ? info.best.sq : null;
+}
+
+async function playInAnalysis(move) {
+  const ply = plyOf();
+  const same = line[ply] && sameHistory(line[ply], move);
+  if (!same) line = line.slice(0, ply).concat([move]);
+  await run('play', { move });
+  ensureAnalyzed();
+}
+
+async function navigate(n) {
+  if (!isAnalysis() || busy) return;
+  n = Math.max(0, Math.min(line.length, n));
+  if (n === plyOf()) return;
+  analysisToken++;
+  analyzingNow = true;
+  await run('load', { history: flat(line.slice(0, n)) });
+  ensureAnalyzed();
+}
+
+// Analyses the current position and the one before it (if needed), then
+// explains the last move.
+async function ensureAnalyzed() {
+  const token = ++analysisToken;
+  const hist = Array.from(state.history);
+  const n = hist.length / 3;
+  const targets = n > 0 ? [n - 1, n] : [0];
+  analyzingNow = true;
+  render();
+  try {
+    for (const t of targets) {
+      if (!(await analyzePrefix(hist, t, token))) return;
+    }
+    if (n > 0) await explainPrefix(hist, n, token);
+  } finally {
+    if (token === analysisToken) {
+      analyzingNow = false;
+      render();
+    }
+  }
+}
+
+// Searches the position after the first `t` moves of `hist` (cached).
+// Returns false if superseded.
+async function analyzePrefix(hist, t, token) {
+  const h = hist.slice(0, 3 * t);
+  const key = hkey(h);
+  if (analysisCache.has(key)) return true;
+  let info;
+  if (t === hist.length / 3 && state.over) {
+    info = { value: state.winner === 0 ? 1 : -1, proven: state.winner === 0 ? 1 : -1, best: null, pv: [], iterations: 0 };
+  } else {
+    info = await parallelSearch(ANALYSIS_MS, h);
+    busy = false;
+  }
+  if (token !== analysisToken || !info) return false;
+  analysisCache.set(key, info);
+  render();
+  return true;
+}
+
+async function explainPrefix(hist, n, token) {
+  const key = hkey(hist.slice(0, 3 * n));
+  if (explainCache.has(key)) return;
+  const before = analysisCache.get(hkey(hist.slice(0, 3 * (n - 1))));
+  const after = analysisCache.get(key);
+  if (!before || !after) return;
+  const mover = (n - 1) % 2;
+  // Compare within one search tree when the played move was explored
+  // enough there: separate searches are each optimistic for their side to
+  // move, which would exaggerate every loss.
+  const played = hist.slice(3 * (n - 1), 3 * n);
+  const total = before.candidates ? before.candidates.reduce((a, c) => a + c.visits, 0) : 0;
+  const cand = before.candidates && before.candidates.find((c) => sameHistory(c.sq, played));
+  const best = before.candidates && before.candidates[0];
+  let pBefore, pAfter;
+  if (!before.proven && !after.proven && cand && best && cand.q != null && cand.visits >= Math.max(30, 0.03 * total)) {
+    const toMover = (q) => (mover === 0 ? (q + 1) / 2 : (1 - q) / 2);
+    pAfter = toMover(cand.q);
+    pBefore = Math.max(toMover(best.q), pAfter);
+  } else if (!before.proven && !after.proven && before.best && !sameHistory(before.best.sq, played)) {
+    // Measure the recommended move the same way as the played one: search
+    // the position after it, so both values carry the same bias.
+    const hb = hist.slice(0, 3 * (n - 1)).concat(before.best.sq);
+    let afterBest = analysisCache.get(hkey(hb));
+    if (!afterBest) {
+      afterBest = await parallelSearch(ANALYSIS_MS, hb);
+      busy = false;
+      if (token !== analysisToken || !afterBest) return;
+      analysisCache.set(hkey(hb), afterBest);
+    }
+    pAfter = moverP(after, mover);
+    pBefore = Math.max(moverP(afterBest, mover), pAfter);
+  } else {
+    pAfter = moverP(after, mover);
+    pBefore = Math.max(moverP(before, mover), pAfter);
+  }
+  const r = await call('explain', {
+    history: hist.slice(0, 3 * n),
+    ply: n - 1,
+    best: before.best ? before.best.sq : [],
+    reply: after.best ? after.best.sq : [],
+    pBefore,
+    pAfter,
+  });
+  if (token !== analysisToken || !r.result) return;
+  explainCache.set(key, r.result);
+  render();
+}
+
+function esc(t) {
+  return t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
+function renderAnalysis() {
+  if (!isAnalysis() || !state) return;
+  const n = plyOf();
+  els.prev.disabled = busy || n === 0;
+  els.next.disabled = busy || n >= line.length;
+  els.analyzeAll.disabled = busy || line.length === 0;
+  els.showBest.setAttribute('aria-pressed', String(showBest));
+  els.showBest.classList.toggle('on', showBest);
+
+  const info = analysisCache.get(hkey(state.history));
+  if (state.over) {
+    els.posInfo.textContent = `게임 종료 — ${colorName(state.winner)} 승리`;
+  } else if (info) {
+    const side = colorName(state.side);
+    const p = Math.round(100 * moverP(info, state.side));
+    const verdict = info.proven ? (moverP(info, state.side) > 0.5 ? '필승 확인' : '필패 확인') : `승률 ${p}%`;
+    const best = info.best ? ` · 추천 ${info.best.move}` : '';
+    els.posInfo.textContent = `${side} 차례 · ${side} ${verdict}${best}`;
+  } else {
+    els.posInfo.textContent = analyzingNow ? '이 국면을 분석하는 중…' : '';
+  }
+
+  const ex = currentExplanation();
+  if (!ex) {
+    els.explain.innerHTML = n === 0
+      ? '<p class="muted">수를 두면 그 수가 왜 좋은지, 왜 아쉬운지 설명해 드려요.</p>'
+      : analyzingNow ? '<p class="muted">직전 수를 분석하는 중…</p>' : '';
+  } else {
+    const mv = state.history.slice(3 * (n - 1), 3 * n);
+    const num = `${Math.floor((n - 1) / 2) + 1}. ${colorName((n - 1) % 2)}`;
+    const li = (p) => `<li class="${p.positive ? 'pos' : 'neg'}">${esc(p.text)}</li>`;
+    let html = `<p class="ex-head"><span class="grade g-${ex.grade}">${ex.label}</span> ${num} ${moveName(mv)}</p>`;
+    html += `<p class="ex-sum">${esc(ex.summary)}</p>`;
+    if (ex.points.length) html += `<ul class="ex-pts">${ex.points.map(li).join('')}</ul>`;
+    if (ex.replyPoints.length) html += `<ul class="ex-pts threat">${ex.replyPoints.map((p) => `<li class="neg">${esc(p.text)}</li>`).join('')}</ul>`;
+    if (ex.best) {
+      html += `<p class="ex-best">${ex.grade === 'good' ? '비슷하게 좋은 대안' : '추천 수'}: <b>${ex.best.move}</b></p>`;
+      if (ex.bestPoints.length) html += `<ul class="ex-pts">${ex.bestPoints.map(li).join('')}</ul>`;
+    }
+    html += `<p class="ex-bal">${esc(ex.balance)}</p>`;
+    els.explain.innerHTML = html;
+  }
+  renderGraph();
+}
+
+// White's win chance per ply along the line (analysed positions only).
+function renderGraph() {
+  const N = line.length;
+  const W = 300, H = 70;
+  const x = (i) => (N === 0 ? W / 2 : (i / N) * W);
+  const y = (p) => H - p * H;
+  const pts = [];
+  const dots = [];
+  for (let i = 0; i <= N; i++) {
+    const info = analysisCache.get(hkey(flat(line.slice(0, i))));
+    if (!info) continue;
+    const p = moverP(info, 0);
+    pts.push(`${x(i).toFixed(1)},${y(p).toFixed(1)}`);
+    const ex = i > 0 ? explainCache.get(hkey(flat(line.slice(0, i)))) : null;
+    if (ex && GRADE_MARK[ex.grade]) dots.push(`<circle class="gd g-${ex.grade}" cx="${x(i).toFixed(1)}" cy="${y(p).toFixed(1)}" r="3.5"/>`);
+  }
+  const cur = x(plyOf());
+  const hits = [];
+  for (let i = 0; i <= N; i++) {
+    const w = N === 0 ? W : W / N;
+    hits.push(`<rect class="hit" data-ply="${i}" x="${(x(i) - w / 2).toFixed(1)}" y="0" width="${w.toFixed(1)}" height="${H}"/>`);
+  }
+  els.graph.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">` +
+    `<rect class="bg-black" x="0" y="0" width="${W}" height="${H}"/>` +
+    `<line class="mid" x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}"/>` +
+    (pts.length ? `<polygon class="area" points="0,${H} ${pts.join(' ')} ${pts[pts.length - 1].split(',')[0]},${H}"/>` : '') +
+    (pts.length ? `<polyline class="line" points="${pts.join(' ')}"/>` : '') +
+    `<line class="cur" x1="${cur}" y1="0" x2="${cur}" y2="${H}"/>` +
+    dots.join('') +
+    hits.join('') +
+    '</svg>';
+}
+
+els.graph.addEventListener('click', (e) => {
+  const r = e.target.closest('rect.hit');
+  if (r) navigate(Number(r.dataset.ply));
+});
+
+function renderLine() {
+  const n = plyOf();
+  const cells = line.map((m, i) => {
+    const ex = explainCache.get(hkey(flat(line.slice(0, i + 1))));
+    const mark = ex ? GRADE_MARK[ex.grade] : '';
+    const cls = ['mv', i === n - 1 ? 'cur' : '', i >= n ? 'ahead' : '', ex ? `g-${ex.grade}` : ''].join(' ');
+    return `<td class="${cls}" data-ply="${i + 1}">${moveName(m)}${mark ? `<span class="mark">${mark}</span>` : ''}</td>`;
+  });
+  const rows = [];
+  for (let i = 0; i < cells.length; i += 2) {
+    rows.push(`<tr><td>${i / 2 + 1}</td>${cells[i]}${cells[i + 1] || '<td></td>'}</tr>`);
+  }
+  const html = rows.join('');
+  if (els.moves.innerHTML !== html) {
+    els.moves.innerHTML = html;
+    const curEl = els.moves.querySelector('td.cur');
+    if (curEl) curEl.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+els.moves.addEventListener('click', (e) => {
+  const td = e.target.closest('td.mv');
+  if (td && isAnalysis()) navigate(Number(td.dataset.ply));
+});
+
+els.prev.addEventListener('click', () => navigate(plyOf() - 1));
+els.next.addEventListener('click', () => navigate(plyOf() + 1));
+els.showBest.addEventListener('click', () => {
+  showBest = !showBest;
+  render();
+});
+
+// Analyse every position of the line, then explain every move.
+els.analyzeAll.addEventListener('click', async () => {
+  const token = ++analysisToken;
+  const all = flat(line);
+  analyzingNow = true;
+  render();
+  try {
+    for (let t = 0; t <= line.length; t++) {
+      if (!(await analyzePrefix(all, t, token))) return;
+    }
+    for (let t = 1; t <= line.length; t++) {
+      await explainPrefix(all, t, token);
+      if (token !== analysisToken) return;
+    }
+  } finally {
+    if (token === analysisToken) {
+      analyzingNow = false;
+      render();
+    }
+  }
+});
+
+let importing = false;
+
+els.exportKibo.addEventListener('click', async () => {
+  importing = false;
+  els.importKibo.textContent = '기보 불러오기';
+  const text = line.map(moveName).join(' ');
+  els.kiboText.hidden = false;
+  els.kiboText.value = text;
+  els.kiboText.select();
+  try {
+    await navigator.clipboard.writeText(text);
+    els.kiboMsg.textContent = '기보를 클립보드에 복사했어요.';
+  } catch {
+    els.kiboMsg.textContent = '아래 칸의 기보를 복사하세요.';
+  }
+});
+
+// First press opens an empty box, second press loads what was pasted.
+els.importKibo.addEventListener('click', async () => {
+  if (!importing) {
+    importing = true;
+    els.kiboText.hidden = false;
+    els.kiboText.value = '';
+    els.kiboText.focus();
+    els.importKibo.textContent = '이 기보로 불러오기';
+    return;
+  }
+  importing = false;
+  const text = els.kiboText.value.trim();
+  els.importKibo.textContent = '기보 불러오기';
+  els.kiboText.hidden = true;
+  if (!text) return;
+  analysisToken++;
+  const res = await run('loadNotation', { text });
+  const h = Array.from(state.history);
+  line = [];
+  for (let i = 0; i < h.length; i += 3) line.push(h.slice(i, i + 3));
+  analysisCache.clear();
+  explainCache.clear();
+  ensureAnalyzed();
+  els.kiboMsg.textContent = res && res.failed
+    ? `${res.played}수까지 불러왔어요. 읽을 수 없는 수: ${res.failed}`
+    : `${res ? res.played : 0}수를 불러왔어요.`;
+});
+
 // Expose for debugging and automated checks.
-window.amazons = { call, get state() { return state; }, get lastAiInfo() { return lastAiInfo; }, combineInfos };
+window.amazons = {
+  call,
+  combineInfos,
+  get state() { return state; },
+  get lastAiInfo() { return lastAiInfo; },
+  get line() { return line; },
+  analysisCache,
+  explainCache,
+  get analyzing() { return analyzingNow; },
+  get busy() { return busy; },
+};
 
 buildBoard();
 newGame();

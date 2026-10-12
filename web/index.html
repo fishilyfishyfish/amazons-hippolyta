@@ -23,6 +23,7 @@
       <label>상대
         <select id="opponent">
           <option value="mcts:2000">MCTS 2초</option>
+          <option value="analysis">분석 모드 (흑백 직접 두기)</option>
           <option value="mcts:500">MCTS 0.5초</option>
           <option value="greedy">탐욕 (1수 평가)</option>
           <option value="random">랜덤</option>
@@ -44,6 +45,23 @@
       <button id="undo" type="button">무르기</button>
       <button id="cancel" type="button">선택 취소</button>
     </div>
+    <section id="analysisPanel" class="analysis" hidden>
+      <div class="nav">
+        <button id="prev" type="button" aria-label="이전 수">◀</button>
+        <button id="next" type="button" aria-label="다음 수">▶</button>
+        <button id="showBest" type="button" aria-pressed="false">추천 수 보기</button>
+      </div>
+      <p id="posInfo" class="posinfo"></p>
+      <div id="graph" class="graph" aria-label="백 승률 그래프"></div>
+      <div id="explain" class="explain" aria-live="polite"></div>
+      <div class="kibo">
+        <button id="analyzeAll" type="button">전체 분석</button>
+        <button id="exportKibo" type="button">기보 복사</button>
+        <button id="importKibo" type="button">기보 불러오기</button>
+      </div>
+      <p id="kiboMsg" class="kibomsg" aria-live="polite"></p>
+      <textarea id="kiboText" class="kibotext" rows="3" hidden placeholder="예: d1-d7(g7) a7-e3(e6) ..."></textarea>
+    </section>
     <div class="moves-wrap">
       <table class="moves">
         <thead><tr><th>#</th><th>백</th><th>흑</th></tr></thead>

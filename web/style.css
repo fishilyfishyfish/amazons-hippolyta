@@ -236,3 +236,76 @@ button:disabled { opacity: 0.45; cursor: default; }
 .evalfill { height: 100%; width: 50%; background: #f4f1e8; transition: width 0.3s ease; }
 .evaltext, .aiinfo { margin: 0; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .aiinfo { min-height: 1.2em; overflow-wrap: anywhere; }
+
+/* ---- analysis mode ---- */
+:root {
+  --g-best: #2f7d5b;
+  --g-good: #4b8fbf;
+  --g-inaccuracy: #d4a017;
+  --g-mistake: #e07020;
+  --g-blunder: #c62828;
+  --chg-gain: #2f9e6a;
+  --chg-loss: #d64545;
+  --hint: #7b4fd6;
+}
+.analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+.analysis[hidden] { display: none; }
+.analysis .nav, .analysis .kibo { display: flex; gap: 8px; }
+.analysis .nav button, .analysis .kibo button { flex: 1; font-size: 0.95rem; padding: 0 8px; }
+#showBest.on { background: var(--hint); color: #fff; border-color: var(--hint); }
+.posinfo { margin: 0; font-weight: 600; font-size: 0.95rem; }
+.graph svg { width: 100%; height: 70px; display: block; border-radius: 6px; cursor: pointer; }
+.graph .bg-black { fill: #3a3a3a; }
+.graph .area { fill: #f1eee4; }
+.graph .line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.graph .mid { stroke: #999; stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.graph .cur { stroke: var(--hint); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.graph .hit { fill: transparent; }
+.graph .gd { stroke: #fff; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.graph .gd.g-inaccuracy { fill: var(--g-inaccuracy); }
+.graph .gd.g-mistake { fill: var(--g-mistake); }
+.graph .gd.g-blunder { fill: var(--g-blunder); }
+.explain p { margin: 0 0 6px; }
+.explain .muted { color: var(--muted); font-size: 0.92rem; }
+.ex-head { font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.grade { color: #fff; border-radius: 999px; padding: 2px 10px; font-size: 0.85rem; }
+.grade.g-best { background: var(--g-best); }
+.grade.g-good { background: var(--g-good); }
+.grade.g-inaccuracy { background: var(--g-inaccuracy); }
+.grade.g-mistake { background: var(--g-mistake); }
+.grade.g-blunder { background: var(--g-blunder); }
+.ex-sum { font-size: 0.97rem; }
+.ex-pts { margin: 0 0 6px; padding-left: 0; list-style: none; font-size: 0.92rem; line-height: 1.45; }
+.ex-pts li { padding-left: 1.4em; position: relative; margin-bottom: 3px; }
+.ex-pts li::before { position: absolute; left: 0; font-weight: 700; }
+.ex-pts li.pos::before { content: "＋"; color: var(--chg-gain); }
+.ex-pts li.neg::before { content: "－"; color: var(--chg-loss); }
+.ex-pts.threat li::before { content: "⚠"; color: var(--g-mistake); }
+.ex-best { font-size: 0.95rem; }
+.ex-bal { color: var(--muted); font-size: 0.85rem; }
+.kibotext { width: 100%; font: inherit; font-family: ui-monospace, monospace; font-size: 0.9rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); padding: 6px; }
+
+/* Squares whose owner changed with the last move, and the hinted move. */
+.cell.chg-gain { box-shadow: inset 0 0 0 3px var(--chg-gain); }
+.cell.chg-loss { box-shadow: inset 0 0 0 3px var(--chg-loss); }
+.cell.hint-from, .cell.hint-to { box-shadow: inset 0 0 0 4px var(--hint); }
+.cell.hint-arrow { box-shadow: inset 0 0 0 4px var(--hint); background-image: radial-gradient(circle, var(--hint) 0 22%, transparent 23%); }
+
+/* Move list in analysis mode: clickable, grade marks, moves past the
+   current position dimmed. */
+.moves td.mv { cursor: pointer; }
+.moves td.mv.ahead { opacity: 0.45; }
+.moves .mark { font-weight: 700; margin-left: 2px; }
+.moves td.g-inaccuracy .mark { color: var(--g-inaccuracy); }
+.moves td.g-mistake .mark { color: var(--g-mistake); }
+.moves td.g-blunder .mark { color: var(--g-blunder); }
+.kibomsg { margin: 0; font-size: 0.85rem; color: var(--muted); min-height: 1em; }
+.kibomsg:empty { display: none; }

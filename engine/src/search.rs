@@ -11,7 +11,7 @@
 //!   player who makes that move.
 
 use crate::board::{bit, neighbors, queen_reach, Bits, Board, Move, BOARD_MASK};
-use crate::eval::{evaluate, EvalWeights};
+use crate::eval::{evaluate, regions_separated, EvalWeights};
 use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +27,11 @@ pub struct MctsConfig {
     pub prior_temp: f32,
     /// `value = tanh(score / value_scale)`.
     pub value_scale: f32,
+    /// Once the regions are separated the score is essentially the move-count
+    /// difference and decides the game: `value = tanh((score + 0.5) /
+    /// endgame_scale)` (+0.5: after my move the opponent must move first, so
+    /// equal counts win for me). 0 = use `value_scale` everywhere.
+    pub endgame_scale: f32,
     /// First-play urgency: unvisited edges get `parent value - fpu_reduction`.
     pub fpu_reduction: f32,
     /// Uniform noise in [-jitter, jitter] added to every move score before
@@ -45,6 +50,7 @@ impl Default for MctsConfig {
             half_k: 16,
             prior_temp: 2.0,
             value_scale: 16.0,
+            endgame_scale: 2.0,
             fpu_reduction: 0.2,
             jitter: 0.0,
             seed: 0,
@@ -185,6 +191,8 @@ impl Mcts {
         }
         let value = if best >= WIN_SCORE {
             1.0
+        } else if cfg.endgame_scale > 0.0 && regions_separated(board) {
+            ((best + 0.5) / cfg.endgame_scale).tanh()
         } else {
             (best / cfg.value_scale).tanh()
         };

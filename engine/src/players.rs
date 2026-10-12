@@ -61,6 +61,7 @@ impl PlayerSpec {
                 "half_k" => cfg.half_k = num(v)? as usize,
                 "temp" => cfg.prior_temp = num(v)?,
                 "scale" => cfg.value_scale = num(v)?,
+                "escale" => cfg.endgame_scale = num(v)?,
                 "fpu" => cfg.fpu_reduction = num(v)?,
                 "jitter" => cfg.jitter = num(v)?,
                 "par" => par = num(v)? as u32,
