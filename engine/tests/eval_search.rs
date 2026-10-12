@@ -135,9 +135,84 @@ fn mcts_takes_immediate_win_and_is_consistent() {
     after.make_move(m);
     assert!(!after.has_moves(), "mcts played {m}");
     assert!(t.root_value() > 0.9);
+    assert_eq!(t.root_proven(), 1);
+}
+
+#[test]
+fn mcts_visit_accounting() {
+    let mut t = Mcts::new(Board::new(), MctsConfig::default());
+    t.run(300);
+    assert_eq!(t.iterations(), 300);
     // Visits of root edges sum to iterations - 1 (the first one expands).
     let sum: u32 = t.candidates().iter().map(|c| c.visits).sum();
-    assert_eq!(sum, 199);
+    assert_eq!(sum, 299);
+    assert_eq!(t.root_proven(), 0);
+}
+
+/// Exact result by exhaustive negamax: does the side to move win?
+fn solve(b: &mut Board) -> bool {
+    for m in b.legal_moves() {
+        b.make_move(m);
+        let opp_wins = solve(b);
+        b.unmake_move(m);
+        if !opp_wins {
+            return true;
+        }
+    }
+    false
+}
+
+/// With nothing pruned the solver must agree with exhaustive search whenever
+/// it proves a result, and it should prove small endgames.
+#[test]
+fn solver_matches_exhaustive_search() {
+    let cfg = MctsConfig {
+        top_k: 100_000,
+        half_k: 0,
+        ..MctsConfig::default()
+    };
+    let mut rng = Rng::new(99);
+    let (mut checked, mut proven) = (0, 0);
+    for _ in 0..200 {
+        let mut b = Board::new();
+        let mut hist = Vec::new();
+        while let Some(m) = amazons_engine::random_move(&b, &mut rng) {
+            hist.push(b);
+            b.make_move(m);
+        }
+        // Positions a few plies before the end with a small tree.
+        for back in [2usize, 3, 4, 6] {
+            let Some(&pos) = hist.len().checked_sub(back).and_then(|i| hist.get(i)) else {
+                continue;
+            };
+            // Keep the exhaustive search small: few reachable empty squares
+            // bound the game length, few moves bound the branching.
+            let occ = pos.occupied();
+            let live = queen_levels(pos.amazons[0], occ).reached
+                | queen_levels(pos.amazons[1], occ).reached;
+            if pos.count_moves() > 15 || live.count_ones() > 9 {
+                continue;
+            }
+            let exact = solve(&mut pos.clone());
+            let mut t = Mcts::new(pos, cfg);
+            t.run(3000);
+            checked += 1;
+            match t.root_proven() {
+                0 => {}
+                p => {
+                    proven += 1;
+                    assert_eq!(p == 1, exact, "solver wrong\n{pos}");
+                    if exact {
+                        let mut after = pos;
+                        after.make_move(t.best_move().unwrap());
+                        assert!(!solve(&mut after), "best move does not keep the win\n{pos}");
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 50, "only {checked} positions");
+    assert!(proven * 10 >= checked * 9, "proved {proven}/{checked}");
 }
 
 #[test]
@@ -203,6 +278,8 @@ fn wasm_analysis_api() {
     assert_eq!(g.search_run(50), 50);
     let info = g.search_info(3);
     assert!(info.contains("\"iterations\":50"), "{info}");
+    assert!(info.contains("\"nodes\":50,"), "{info}");
+    assert!(info.contains("\"proven\":0,"), "{info}");
     let best = g.search_best();
     assert!(g.play(best[0], best[1], best[2]));
     // Stale search no longer runs after the position changed.

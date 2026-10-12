@@ -195,6 +195,29 @@ impl Game {
         self.search = Some(Mcts::new(self.board, MctsConfig::default()));
     }
 
+    /// Starts a search whose move ordering is perturbed by `jitter`, so that
+    /// several workers searching the same position explore differently.
+    pub fn search_start_seeded(&mut self, seed: f64, jitter: f32) {
+        let cfg = MctsConfig {
+            seed: seed as u64,
+            jitter,
+            ..MctsConfig::default()
+        };
+        self.search = Some(Mcts::new(self.board, cfg));
+    }
+
+    /// Replaces the game with the given flat `[from, to, arrow, ...]` move
+    /// list (used by helper workers). Returns false if a move is illegal.
+    pub fn load_history(&mut self, moves: &[u8]) -> bool {
+        self.reset();
+        for m in moves.chunks_exact(3) {
+            if !self.play(m[0], m[1], m[2]) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Runs `n` more iterations; returns the total so far.
     pub fn search_run(&mut self, n: u32) -> u32 {
         match &mut self.search {
@@ -243,9 +266,10 @@ impl Game {
             })
             .collect();
         format!(
-            "{{\"iterations\":{},\"nodes\":{},\"value\":{},\"pv\":[{}],\"candidates\":[{}]}}",
+            "{{\"iterations\":{},\"nodes\":{},\"proven\":{},\"value\":{},\"pv\":[{}],\"candidates\":[{}]}}",
             t.iterations(),
             t.node_count(),
+            t.root_proven() as f32 * s,
             s * t.root_value(),
             pv.join(","),
             cands.join(",")

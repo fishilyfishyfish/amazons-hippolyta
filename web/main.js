@@ -23,29 +23,89 @@ const els = {
 
 // ---- worker RPC -----------------------------------------------------------
 
-const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-let nextId = 1;
-const pending = new Map();
-worker.onmessage = (e) => {
-  const { id, error, progress } = e.data;
-  if (progress) {
-    showAiInfo(progress, true);
-    return;
-  }
-  const p = pending.get(id);
-  if (!p) return;
-  pending.delete(id);
-  if (error) p.reject(new Error(error));
-  else p.resolve(e.data);
-};
-worker.onerror = (e) => showError(e.message || '워커 오류');
+// Each worker owns its own engine instance. `engine` holds the real game;
+// helpers only search copies of the position (root parallelism).
+function createWorker(onProgress) {
+  const w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  let nextId = 1;
+  const pending = new Map();
+  w.onmessage = (e) => {
+    const { id, error, progress } = e.data;
+    if (progress) {
+      onProgress(progress);
+      return;
+    }
+    const p = pending.get(id);
+    if (!p) return;
+    pending.delete(id);
+    if (error) p.reject(new Error(error));
+    else p.resolve(e.data);
+  };
+  w.onerror = (e) => showError(e.message || '워커 오류');
+  return (type, args = {}) => {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      w.postMessage({ id, type, ...args });
+    });
+  };
+}
 
-function call(type, args = {}) {
-  const id = nextId++;
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ id, type, ...args });
-  });
+// Searchers = engine worker + helpers, one per spare core (max 6).
+const SEARCHERS = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1));
+const progress = new Array(SEARCHERS).fill(null);
+const onProgress = (i) => (info) => {
+  progress[i] = info;
+  showAiInfo(combineInfos(progress.filter(Boolean)), true);
+};
+const call = createWorker(onProgress(0));
+const helpers = [];
+function getHelpers() {
+  while (helpers.length < SEARCHERS - 1) helpers.push(createWorker(onProgress(helpers.length + 1)));
+  return helpers;
+}
+
+// Merge root statistics of independent searches: visits add up, values are
+// visit-weighted. A proven result from any searcher wins outright.
+function combineInfos(infos) {
+  const byMove = new Map();
+  let iterations = 0;
+  let proven = 0;
+  let provenMove = null;
+  for (const info of infos) {
+    iterations += info.iterations;
+    if (info.proven && !proven) {
+      proven = info.proven;
+      provenMove = info.candidates[0];
+    }
+    for (const c of info.candidates) {
+      const o = byMove.get(c.move);
+      if (o) {
+        if (c.visits) {
+          o.qsum += c.q * c.visits;
+          o.visits += c.visits;
+        }
+      } else {
+        byMove.set(c.move, { ...c, qsum: c.visits ? c.q * c.visits : 0 });
+      }
+    }
+  }
+  const candidates = [...byMove.values()].sort((a, b) => b.visits - a.visits || b.prior - a.prior);
+  for (const c of candidates) c.q = c.visits ? c.qsum / c.visits : null;
+  const best = candidates[0];
+  const value = proven || (best && best.q != null ? best.q : 0);
+  // The engine worker's PV, re-rooted only if it starts with the chosen move.
+  const pv = infos[0] && best && infos[0].pv[0] === best.move ? infos[0].pv : best ? [best.move] : [];
+  return {
+    iterations,
+    searchers: infos.length,
+    proven,
+    value,
+    pv,
+    candidates,
+    best: proven ? provenMove : best,
+    ms: infos.every((i) => i.ms != null) ? Math.max(...infos.map((i) => i.ms)) : null,
+  };
 }
 
 // ---- state ----------------------------------------------------------------
@@ -99,12 +159,34 @@ async function maybeAiTurn() {
   if (kind !== 'mcts') {
     await new Promise((r) => setTimeout(r, AI_DELAY_MS));
     if (my !== epoch) return;
+    await run('aiMove', { kind });
+  } else {
+    const info = await parallelSearch(Number(ms));
+    if (my !== epoch) return;
+    lastAiInfo = info;
+    showAiInfo(info, false);
+    if (info && info.best) await run('play', { move: info.best.sq });
   }
-  const res = await run('aiMove', { kind, ms: Number(ms) || 0 });
   if (my !== epoch) return;
-  lastAiInfo = res && res.info ? res.info : null;
-  showAiInfo(lastAiInfo, false);
   maybeAiTurn();
+}
+
+async function parallelSearch(ms) {
+  progress.fill(null);
+  const history = Array.from(state.history);
+  const jobs = [call('search', { ms, seed: 0, jitter: 0 })];
+  getHelpers().forEach((h, i) =>
+    jobs.push(h('search', { ms, history, seed: 1 + i + Math.floor(Math.random() * 1e9), jitter: 0.5 })),
+  );
+  try {
+    const results = await Promise.all(jobs);
+    return combineInfos(results.map((r) => r.result).filter(Boolean));
+  } catch (err) {
+    showError(err.message);
+    return null;
+  } finally {
+    busy = false;
+  }
 }
 
 const pct = (v) => Math.round(50 * (v + 1)) + '%';
@@ -115,10 +197,13 @@ function showAiInfo(info, live) {
     return;
   }
   const head = live ? 'MCTS 탐색 중' : 'MCTS';
+  const par = info.searchers > 1 ? ` ×${info.searchers}스레드` : '';
   const time = info.ms != null ? ` (${(info.ms / 1000).toFixed(1)}초)` : '';
+  const verdict = info.proven
+    ? ` · ${info.proven > 0 ? '백' : '흑'} 필승 확인`
+    : ` · 백 승률 추정 ${pct(info.value)}`;
   const pv = info.pv.length ? ` · 예상 수순: ${info.pv.slice(0, 4).join(' ')}` : '';
-  els.aiInfo.textContent =
-    `${head} ${info.iterations.toLocaleString()}회${time} · 백 승률 추정 ${pct(info.value)}${pv}`;
+  els.aiInfo.textContent = `${head} ${info.iterations.toLocaleString()}회${par}${time}${verdict}${pv}`;
 }
 
 // ---- board DOM ------------------------------------------------------------
@@ -359,7 +444,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Expose for debugging and automated checks.
-window.amazons = { call, get state() { return state; } };
+window.amazons = { call, get state() { return state; }, get lastAiInfo() { return lastAiInfo; }, combineInfos };
 
 buildBoard();
 newGame();

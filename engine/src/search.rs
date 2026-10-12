@@ -12,6 +12,7 @@
 
 use crate::board::{bit, neighbors, queen_reach, Bits, Board, Move, BOARD_MASK};
 use crate::eval::{evaluate, EvalWeights};
+use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MctsConfig {
@@ -28,6 +29,11 @@ pub struct MctsConfig {
     pub value_scale: f32,
     /// First-play urgency: unvisited edges get `parent value - fpu_reduction`.
     pub fpu_reduction: f32,
+    /// Uniform noise in [-jitter, jitter] added to every move score before
+    /// ordering. Lets several independent trees (root parallelism) explore
+    /// differently; 0 = deterministic.
+    pub jitter: f32,
+    pub seed: u64,
     pub weights: EvalWeights,
 }
 
@@ -40,6 +46,8 @@ impl Default for MctsConfig {
             prior_temp: 2.0,
             value_scale: 8.0,
             fpu_reduction: 0.2,
+            jitter: 0.0,
+            seed: 0,
             weights: EvalWeights::default(),
         }
     }
@@ -66,6 +74,11 @@ struct Node {
     n: u32,
     /// Static value for the side to move at this node.
     value: f32,
+    /// Solver result for the side to move: 1 = proven win, -1 = proven loss.
+    proven: i8,
+    /// The edges cover every legal move (nothing pruned), so a loss can be
+    /// proven from the children.
+    complete: bool,
 }
 
 /// One candidate at the root, for display.
@@ -86,6 +99,8 @@ pub struct Mcts {
     scratch: Vec<Move>,
     scored: Vec<(f32, Move)>,
     path: Vec<u32>,
+    node_path: Vec<u32>,
+    rng: Rng,
 }
 
 impl Mcts {
@@ -98,6 +113,8 @@ impl Mcts {
             scratch: Vec::with_capacity(2200),
             scored: Vec::with_capacity(2200),
             path: Vec::with_capacity(64),
+            node_path: Vec::with_capacity(64),
+            rng: Rng::new(config.seed),
         };
         m.reset(root);
         m
@@ -126,13 +143,23 @@ impl Mcts {
     /// move.
     fn expand(&mut self, node: usize, board: &mut Board) -> f32 {
         let cfg = self.config;
-        score_moves(board, &cfg, &mut self.scratch, &mut self.scored);
+        let mut complete = score_moves(board, &cfg, &mut self.scratch, &mut self.scored);
         self.nodes[node].expanded = true;
         if self.scored.is_empty() {
             self.nodes[node].value = -1.0;
+            self.nodes[node].proven = -1;
             return -1.0;
         }
+        if cfg.jitter > 0.0 {
+            for e in self.scored.iter_mut() {
+                if e.0 < WIN_SCORE {
+                    let u = (self.rng.next_u64() >> 11) as f32 / (1u64 << 53) as f32;
+                    e.0 += cfg.jitter * (2.0 * u - 1.0);
+                }
+            }
+        }
         let k = cfg.top_k.min(self.scored.len()).max(1);
+        complete &= self.scored.len() <= k;
         if self.scored.len() > k {
             self.scored
                 .select_nth_unstable_by(k - 1, |a, b| b.0.total_cmp(&a.0));
@@ -165,6 +192,10 @@ impl Mcts {
         n.first_edge = first;
         n.num_edges = k as u32;
         n.value = value;
+        n.complete = complete;
+        if best >= WIN_SCORE {
+            n.proven = 1;
+        }
         value
     }
 
@@ -176,6 +207,11 @@ impl Mcts {
         let mut best_i = nd.first_edge as usize;
         for i in nd.first_edge as usize..(nd.first_edge + nd.num_edges) as usize {
             let e = &self.edges[i];
+            match self.child_proven(e) {
+                -1 => return i, // move wins
+                1 => continue,  // move loses; skipped while anything else exists
+                _ => {}
+            }
             let q = if e.n > 0 { e.w / e.n as f32 } else { fpu };
             let u = self.config.c_puct * e.prior * sqrt_n / (1 + e.n) as f32;
             if q + u > best {
@@ -186,11 +222,51 @@ impl Mcts {
         best_i
     }
 
+    /// Solver state of the edge's child (for the child's side to move).
+    #[inline]
+    fn child_proven(&self, e: &Edge) -> i8 {
+        if e.child == 0 {
+            0
+        } else {
+            self.nodes[e.child as usize].proven
+        }
+    }
+
+    /// Re-derives `node`'s proof from its children after a backup.
+    fn update_proof(&mut self, node: usize) {
+        let nd = self.nodes[node];
+        if nd.proven != 0 || !nd.expanded {
+            return;
+        }
+        let range = nd.first_edge as usize..(nd.first_edge + nd.num_edges) as usize;
+        let mut all_lose = nd.complete;
+        for i in range {
+            match self.child_proven(&self.edges[i]) {
+                -1 => {
+                    self.nodes[node].proven = 1;
+                    return;
+                }
+                1 => {}
+                _ => all_lose = false,
+            }
+        }
+        if all_lose {
+            self.nodes[node].proven = -1;
+        }
+    }
+
+    /// Solver result at the root: 1 = side to move wins, -1 = loses, 0 = open.
+    pub fn root_proven(&self) -> i8 {
+        self.nodes[0].proven
+    }
+
     /// Runs one simulation.
     pub fn iterate(&mut self) {
         let mut board = self.root;
         let mut node = 0usize;
         self.path.clear();
+        self.node_path.clear();
+        self.node_path.push(0);
         let mut v;
         loop {
             let nd = self.nodes[node];
@@ -198,8 +274,8 @@ impl Mcts {
                 v = self.expand(node, &mut board);
                 break;
             }
-            if nd.num_edges == 0 {
-                v = -1.0; // no moves: side to move has lost
+            if nd.proven != 0 {
+                v = nd.proven as f32;
                 break;
             }
             let ei = self.select(node);
@@ -210,20 +286,19 @@ impl Mcts {
                 self.edges[ei].child = (self.nodes.len() - 1) as u32;
             }
             node = self.edges[ei].child as usize;
+            self.node_path.push(node as u32);
         }
         // Backup. `v` is for the side to move at the leaf; each edge's value
         // is for the player who made it, i.e. the parent's side to move.
         self.nodes[node].n += 1;
-        self.nodes[0].n += (node != 0) as u32;
         for i in (0..self.path.len()).rev() {
             v = -v;
             let e = &mut self.edges[self.path[i] as usize];
             e.n += 1;
             e.w += v;
-            if i > 0 {
-                let parent = self.edges[self.path[i - 1] as usize].child as usize;
-                self.nodes[parent].n += 1;
-            }
+            let parent = self.node_path[i] as usize;
+            self.nodes[parent].n += 1;
+            self.update_proof(parent);
         }
     }
 
@@ -237,10 +312,22 @@ impl Mcts {
     /// earlier edge).
     fn most_visited(&self, node: usize) -> usize {
         let nd = &self.nodes[node];
-        let mut best = nd.first_edge as usize;
-        for i in best + 1..(nd.first_edge + nd.num_edges) as usize {
-            let (e, b) = (&self.edges[i], &self.edges[best]);
-            if e.n > b.n || (e.n == b.n && e.prior > b.prior) {
+        let range = nd.first_edge as usize..(nd.first_edge + nd.num_edges) as usize;
+        // A proven winning move beats any visit count; a proven losing move
+        // is only chosen when every move loses.
+        let rank = |i: usize| {
+            let e = &self.edges[i];
+            let class = match self.child_proven(e) {
+                -1 => 2,
+                1 => 0,
+                _ => 1,
+            };
+            (class, e.n)
+        };
+        let mut best = range.start;
+        for i in range.skip(1) {
+            let (ri, rb) = (rank(i), rank(best));
+            if ri > rb || (ri == rb && self.edges[i].prior > self.edges[best].prior) {
                 best = i;
             }
         }
@@ -279,6 +366,9 @@ impl Mcts {
 
     /// Value of the root for its side to move, in [-1, 1].
     pub fn root_value(&self) -> f32 {
+        if self.nodes[0].proven != 0 {
+            return self.nodes[0].proven as f32;
+        }
         match self.candidates().first() {
             Some(c) if c.visits > 0 => c.q,
             _ => self.nodes[0].value,
@@ -308,6 +398,40 @@ impl Mcts {
     }
 }
 
+/// Merges root candidates of independent searches of the same position
+/// (root parallelism): visits are summed, `q` is visit-weighted. Sorted by
+/// total visits.
+pub fn merge_candidates(lists: &[Vec<Candidate>]) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    for list in lists {
+        for c in list {
+            match out.iter_mut().find(|o| o.mv == c.mv) {
+                Some(o) => {
+                    let qs = |x: &Candidate| {
+                        if x.visits > 0 {
+                            x.q * x.visits as f32
+                        } else {
+                            0.0
+                        }
+                    };
+                    let total = o.visits + c.visits;
+                    let q = if total > 0 {
+                        (qs(o) + qs(c)) / total as f32
+                    } else {
+                        f32::NAN
+                    };
+                    o.visits = total;
+                    o.q = q;
+                    o.prior = o.prior.max(c.prior);
+                }
+                None => out.push(*c),
+            }
+        }
+    }
+    out.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.prior.total_cmp(&a.prior)));
+    out
+}
+
 /// Score of `m` for the player making it.
 #[inline]
 fn score_after(board: &mut Board, m: Move, w: &EvalWeights) -> f32 {
@@ -328,7 +452,7 @@ fn score_moves(
     cfg: &MctsConfig,
     scratch: &mut Vec<Move>,
     out: &mut Vec<(f32, Move)>,
-) {
+) -> bool {
     out.clear();
     let w = &cfg.weights;
     if cfg.half_k == 0 {
@@ -337,7 +461,7 @@ fn score_moves(
         for &m in scratch.iter() {
             out.push((score_after(board, m, w), m));
         }
-        return;
+        return true;
     }
     // Stage 1: amazon steps, evaluated with the arrow not yet shot.
     let occ = board.occupied();
@@ -364,7 +488,8 @@ fn score_moves(
             steps.push((score, from, to));
         }
     }
-    if steps.len() > cfg.half_k {
+    let complete = steps.len() <= cfg.half_k;
+    if !complete {
         steps.select_nth_unstable_by(cfg.half_k - 1, |a, b| b.0.total_cmp(&a.0));
         steps.truncate(cfg.half_k);
     }
@@ -376,6 +501,7 @@ fn score_moves(
             out.push((score_after(board, m, w), m));
         }
     }
+    complete
 }
 
 /// Best move by one-ply static evaluation (ties broken by move order).

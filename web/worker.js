@@ -24,9 +24,10 @@ function snapshot() {
 
 const play = (m) => m.length === 3 && game.play(m[0], m[1], m[2]);
 
-// Runs MCTS for `ms` milliseconds, posting progress about every 250 ms.
-function search(ms, id) {
-  game.search_start();
+// Runs MCTS for `ms` milliseconds on the current position, posting progress
+// about every 250 ms.
+function search(ms, id, seed, jitter) {
+  game.search_start_seeded(seed, jitter);
   const start = performance.now();
   let lastReport = start;
   for (;;) {
@@ -35,10 +36,10 @@ function search(ms, id) {
     if (now - start >= ms) break;
     if (now - lastReport >= 250) {
       lastReport = now;
-      self.postMessage({ id, progress: JSON.parse(game.search_info(5)) });
+      self.postMessage({ id, progress: JSON.parse(game.search_info(8)) });
     }
   }
-  const info = JSON.parse(game.search_info(5));
+  const info = JSON.parse(game.search_info(64));
   info.ms = Math.round(performance.now() - start);
   return info;
 }
@@ -55,11 +56,16 @@ const handlers = {
     while (n < count && game.undo()) n++;
     return n;
   },
-  aiMove({ kind, ms }, id) {
-    if (kind === 'random') return { ok: play(game.random_move()) };
-    if (kind === 'greedy') return { ok: play(game.greedy_move()) };
-    const info = search(ms, id);
-    return { ok: play(game.search_best()), info };
+  aiMove({ kind }) {
+    if (kind === 'random') return play(game.random_move());
+    if (kind === 'greedy') return play(game.greedy_move());
+    return false;
+  },
+  // Search without playing. Helper workers pass `history` to load the
+  // position first; the engine worker searches its own game.
+  search({ ms, history, seed, jitter }, id) {
+    if (history && !game.load_history(new Uint8Array(history))) throw new Error('bad history');
+    return search(ms, id, seed, jitter);
   },
 };
 
