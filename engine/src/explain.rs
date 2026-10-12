@@ -440,7 +440,7 @@ pub fn describe(f: &MoveFacts) -> Vec<Point> {
     }
 
     // Regions sealed.
-    if f.separated_after && !f.separated_before {
+    if f.separated_after && !f.separated_before && !f.opponent_has_no_moves {
         let me = f.mine_after;
         let opp = f.opp_after;
         let verdict = if me > opp {

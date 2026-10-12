@@ -31,6 +31,11 @@ const els = {
   importKibo: document.getElementById('importKibo'),
   kiboText: document.getElementById('kiboText'),
   kiboMsg: document.getElementById('kiboMsg'),
+  coach: document.getElementById('coach'),
+  coachLabel: document.getElementById('coachLabel'),
+  coachPanel: document.getElementById('coachPanel'),
+  coachBody: document.getElementById('coachBody'),
+  hintBtn: document.getElementById('hintBtn'),
 };
 
 // ---- worker RPC -----------------------------------------------------------
@@ -66,7 +71,9 @@ function createWorker(onProgress) {
 // Searchers = engine worker + helpers, one per spare core (max 6).
 const SEARCHERS = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1));
 const progress = new Array(SEARCHERS).fill(null);
+let liveSearch = false; // show progress only for the AI's own search
 const onProgress = (i) => (info) => {
+  if (!liveSearch) return;
   progress[i] = info;
   showAiInfo(combineInfos(progress.filter(Boolean)), true);
 };
@@ -173,24 +180,50 @@ async function maybeAiTurn() {
   if (kind !== 'mcts') {
     await new Promise((r) => setTimeout(r, AI_DELAY_MS));
     if (my !== epoch) return;
+    const before = Array.from(state.history);
     await run('aiMove', { kind });
+    if (my !== epoch) return;
+    if (coachOn() && state.history.length > before.length) {
+      // Random/greedy AIs do not search: analyse the position after the
+      // human's move separately (helpers only, in the background).
+      const aiMove = Array.from(state.history.slice(before.length, before.length + 3));
+      parallelSearch(ANALYSIS_MS, before, true).then((info) => {
+        if (!info || my !== epoch) return;
+        analysisCache.set(hkey(before), info);
+        coachAfterAi(before, info, aiMove, my);
+      });
+    }
   } else {
+    const before = Array.from(state.history);
+    liveSearch = true;
     const info = await parallelSearch(Number(ms));
+    liveSearch = false;
     if (my !== epoch) return;
     lastAiInfo = info;
     showAiInfo(info, false);
-    if (info && info.best) await run('play', { move: info.best.sq });
+    if (!info || !info.best) {
+      busy = false;
+      render();
+      return;
+    }
+    // The AI's search of this position is also the "after" analysis of the
+    // human's last move.
+    analysisCache.set(hkey(before), info);
+    await run('play', { move: info.best.sq });
+    if (my !== epoch) return;
+    if (coachOn()) coachAfterAi(before, info, info.best.sq, my);
   }
   if (my !== epoch) return;
+  if (coachOn() && isHumanTurn()) coachPrepare();
   maybeAiTurn();
 }
 
 // Searches `history` (default: the current position) with every searcher.
 // The engine worker only joins when the position is its own current game,
 // so analysing an earlier position never disturbs the game.
-async function parallelSearch(ms, history = null) {
+async function parallelSearch(ms, history = null, helpersOnly = false) {
   progress.fill(null);
-  const current = history === null || sameHistory(history, state.history);
+  const current = !helpersOnly && (history === null || sameHistory(history, state.history));
   if (history === null) history = Array.from(state.history);
   const jobs = current ? [call('search', { ms, seed: 0, jitter: 0 })] : [];
   getHelpers(current ? 0 : 1).forEach((h, i) =>
@@ -204,8 +237,6 @@ async function parallelSearch(ms, history = null) {
   } catch (err) {
     showError(err.message);
     return null;
-  } finally {
-    busy = false;
   }
 }
 
@@ -274,7 +305,7 @@ function render() {
   const ex = isAnalysis() && sel.from < 0 ? currentExplanation() : null;
   const gained = new Set(ex ? ex.gained : []);
   const lost = new Set(ex ? ex.lost : []);
-  const hintMove = isAnalysis() && showBest && sel.from < 0 ? currentBestMove() : null;
+  const hintMove = (isAnalysis() ? showBest : coachHint) && sel.from < 0 ? currentBestMove() : null;
   const heatOn = els.heat.checked;
 
   for (let i = 0; i < 100; i++) {
@@ -323,6 +354,7 @@ function render() {
   renderEval();
   renderMoves();
   renderAnalysis();
+  renderCoach();
   els.undo.disabled = busy || undoCount() === 0;
   els.cancel.disabled = sel.from < 0;
 }
@@ -380,11 +412,17 @@ function renderMoves() {
   if (isAnalysis()) return renderLine();
   const n = state.notation;
   const rows = [];
+  const cell = (j) => {
+    if (j >= n.length) return '<td></td>';
+    const ex = coachOn() && j % 2 === settings.human
+      ? explainCache.get(hkey(state.history.slice(0, 3 * (j + 1))))
+      : null;
+    const mark = ex ? GRADE_MARK[ex.grade] : '';
+    const cls = [j === n.length - 1 ? 'cur' : '', ex ? `g-${ex.grade}` : ''].join(' ').trim();
+    return `<td${cls ? ` class="${cls}"` : ''}>${n[j]}${mark ? `<span class="mark">${mark}</span>` : ''}</td>`;
+  };
   for (let i = 0; i < n.length; i += 2) {
-    const cur = (j) => (j === n.length - 1 ? ' class="cur"' : '');
-    rows.push(
-      `<tr><td>${i / 2 + 1}</td><td${cur(i)}>${n[i]}</td><td${cur(i + 1)}>${n[i + 1] || ''}</td></tr>`,
-    );
+    rows.push(`<tr><td>${i / 2 + 1}</td>${cell(i)}${cell(i + 1)}</tr>`);
   }
   const html = rows.join('');
   if (els.moves.innerHTML !== html) {
@@ -408,7 +446,14 @@ function onCell(sq) {
     if (tree.get(sel.from).get(sel.to).has(sq)) {
       const move = [sel.from, sel.to, sq];
       if (isAnalysis()) playInAnalysis(move);
-      else run('play', { move }).then(maybeAiTurn);
+      else {
+        coachHint = false;
+        const before = Array.from(state.history);
+        run('play', { move }).then(() => {
+          if (state.over && coachOn()) coachFinal(before.concat(move));
+          maybeAiTurn();
+        });
+      }
     } else if (sq === sel.to) {
       sel.to = -1; // tap the moved amazon again to take the step back
       render();
@@ -443,7 +488,9 @@ els.undo.addEventListener('click', async () => {
   const count = undoCount();
   if (!count) return;
   epoch++;
+  analysisToken++;
   await run('undo', { count });
+  if (coachOn() && isHumanTurn()) coachPrepare();
 });
 
 els.heat.addEventListener('change', () => {
@@ -471,8 +518,12 @@ async function newGame() {
   analysisToken++;
   epoch++;
   await run('newGame');
+  coachHint = false;
   if (isAnalysis()) ensureAnalyzed();
-  else maybeAiTurn();
+  else {
+    if (coachOn() && isHumanTurn()) coachPrepare();
+    maybeAiTurn();
+  }
 }
 
 els.newGame.addEventListener('click', newGame);
@@ -595,9 +646,10 @@ async function analyzePrefix(hist, t, token) {
 async function explainPrefix(hist, n, token) {
   const key = hkey(hist.slice(0, 3 * n));
   if (explainCache.has(key)) return;
-  const before = analysisCache.get(hkey(hist.slice(0, 3 * (n - 1))));
+  const beforeKey = hkey(hist.slice(0, 3 * (n - 1)));
+  const before = analysisCache.get(beforeKey) || (await pendingAnalysis.get(beforeKey));
   const after = analysisCache.get(key);
-  if (!before || !after) return;
+  if (!before || !after || token !== analysisToken) return;
   const mover = (n - 1) % 2;
   // Compare within one search tree when the played move was explored
   // enough there: separate searches are each optimistic for their side to
@@ -645,6 +697,22 @@ function esc(t) {
   return t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 }
 
+// Explanation card for move number `n` (1-based ply) `mv`.
+function explanationHtml(ex, n, mv, who = '') {
+  const num = `${Math.floor((n - 1) / 2) + 1}. ${colorName((n - 1) % 2)}${who}`;
+  const li = (p) => `<li class="${p.positive ? 'pos' : 'neg'}">${esc(p.text)}</li>`;
+  let html = `<p class="ex-head"><span class="grade g-${ex.grade}">${ex.label}</span> ${num} ${moveName(mv)}</p>`;
+  html += `<p class="ex-sum">${esc(ex.summary)}</p>`;
+  if (ex.points.length) html += `<ul class="ex-pts">${ex.points.map(li).join('')}</ul>`;
+  if (ex.replyPoints.length) html += `<ul class="ex-pts threat">${ex.replyPoints.map((p) => `<li class="neg">${esc(p.text)}</li>`).join('')}</ul>`;
+  if (ex.best) {
+    html += `<p class="ex-best">${ex.grade === 'good' ? '비슷하게 좋은 대안' : '추천 수'}: <b>${ex.best.move}</b></p>`;
+    if (ex.bestPoints.length) html += `<ul class="ex-pts">${ex.bestPoints.map(li).join('')}</ul>`;
+  }
+  html += `<p class="ex-bal">${esc(ex.balance)}</p>`;
+  return html;
+}
+
 function renderAnalysis() {
   if (!isAnalysis() || !state) return;
   const n = plyOf();
@@ -673,19 +741,7 @@ function renderAnalysis() {
       ? '<p class="muted">수를 두면 그 수가 왜 좋은지, 왜 아쉬운지 설명해 드려요.</p>'
       : analyzingNow ? '<p class="muted">직전 수를 분석하는 중…</p>' : '';
   } else {
-    const mv = state.history.slice(3 * (n - 1), 3 * n);
-    const num = `${Math.floor((n - 1) / 2) + 1}. ${colorName((n - 1) % 2)}`;
-    const li = (p) => `<li class="${p.positive ? 'pos' : 'neg'}">${esc(p.text)}</li>`;
-    let html = `<p class="ex-head"><span class="grade g-${ex.grade}">${ex.label}</span> ${num} ${moveName(mv)}</p>`;
-    html += `<p class="ex-sum">${esc(ex.summary)}</p>`;
-    if (ex.points.length) html += `<ul class="ex-pts">${ex.points.map(li).join('')}</ul>`;
-    if (ex.replyPoints.length) html += `<ul class="ex-pts threat">${ex.replyPoints.map((p) => `<li class="neg">${esc(p.text)}</li>`).join('')}</ul>`;
-    if (ex.best) {
-      html += `<p class="ex-best">${ex.grade === 'good' ? '비슷하게 좋은 대안' : '추천 수'}: <b>${ex.best.move}</b></p>`;
-      if (ex.bestPoints.length) html += `<ul class="ex-pts">${ex.bestPoints.map(li).join('')}</ul>`;
-    }
-    html += `<p class="ex-bal">${esc(ex.balance)}</p>`;
-    els.explain.innerHTML = html;
+    els.explain.innerHTML = explanationHtml(ex, n, state.history.slice(3 * (n - 1), 3 * n));
   }
   renderGraph();
 }
@@ -828,6 +884,149 @@ els.importKibo.addEventListener('click', async () => {
     : `${res ? res.played : 0}수를 불러왔어요.`;
 });
 
+// ---- friendly game (coach) -------------------------------------------------
+//
+// Playing the AI with explanations of the human's moves. While the human
+// thinks, helper workers analyse the position ("before"). The AI's own
+// search of the position after the human's move is the "after" analysis and
+// yields the AI's reply, so coaching costs no extra search except when the
+// played move must be compared against the recommended one.
+
+const pendingAnalysis = new Map(); // history key -> Promise<info> (helpers only)
+let coachHint = false;
+
+const coachOn = () => !isAnalysis() && settings.opponent !== 'human' && els.coach.checked;
+
+// Starts the background analysis of the current position (human to move).
+function coachPrepare() {
+  const hist = Array.from(state.history);
+  const key = hkey(hist);
+  if (analysisCache.has(key) || pendingAnalysis.has(key)) return;
+  const p = parallelSearch(ANALYSIS_MS, hist, true).then((info) => {
+    pendingAnalysis.delete(key);
+    if (info) analysisCache.set(key, info);
+    render();
+    return info;
+  });
+  pendingAnalysis.set(key, p);
+}
+
+// After the AI replied: explain the human's move and the AI's reply.
+async function coachAfterAi(beforeAi, aiInfo, aiMove, my) {
+  const token = analysisToken;
+  const n = beforeAi.length / 3; // plies up to and including the human move
+  if (n > 0 && (n - 1) % 2 === settings.human) {
+    coachBusy = true;
+    render();
+    await explainPrefix(beforeAi, n, token);
+    coachBusy = false;
+  }
+  if (my !== epoch || token !== analysisToken) return;
+  // The AI's move, explained as if best: this lists what it aims at.
+  const withAi = beforeAi.concat(aiMove);
+  const p = moverP(aiInfo, n % 2);
+  const r = await call('explain', { history: withAi, ply: n, best: aiMove, reply: [], pBefore: p, pAfter: p });
+  if (my !== epoch || token !== analysisToken || !r.result) return;
+  explainCache.set(hkey(withAi), r.result);
+  render();
+}
+let coachBusy = false;
+
+// The human's move ended the game (the AI cannot move): explain it with a
+// terminal "after" value.
+async function coachFinal(hist) {
+  const key = hkey(hist);
+  analysisCache.set(key, { value: state.winner === 0 ? 1 : -1, proven: state.winner === 0 ? 1 : -1, best: null, pv: [], candidates: [], iterations: 0 });
+  coachBusy = true;
+  render();
+  await explainPrefix(hist, hist.length / 3, analysisToken);
+  coachBusy = false;
+  render();
+}
+
+// Engine-move texts are written from the mover's (engine's) point of view;
+// turn "내/상대" around for the human reading them.
+function fromHumanView(text) {
+  return text.replace(/내 /g, '\u0001').replace(/상대 /g, '내 ').replace(/\u0001/g, '엔진의 ');
+}
+
+function renderCoach() {
+  const on = coachOn() && state;
+  els.coachPanel.hidden = !on;
+  els.coachLabel.hidden = isAnalysis() || settings.opponent === 'human';
+  if (!on) return;
+  const H = state.history;
+  const plies = H.length / 3;
+  // Latest human move and the AI move after it.
+  let mine = -1;
+  for (let i = plies - 1; i >= 0; i--) {
+    if (i % 2 === settings.human) {
+      mine = i;
+      break;
+    }
+  }
+  const exMine = mine >= 0 ? explainCache.get(hkey(H.slice(0, 3 * (mine + 1)))) : null;
+  const exAi = mine >= 0 && mine + 1 < plies ? explainCache.get(hkey(H.slice(0, 3 * (mine + 2)))) : null;
+  let html = '';
+  if (exMine) {
+    html += explanationHtml(exMine, mine + 1, H.slice(3 * mine, 3 * mine + 3), ' (나)');
+  } else if (mine >= 0 && coachBusy) {
+    html += '<p class="muted">내 수를 분석하는 중…</p>';
+  } else if (mine < 0) {
+    html += '<p class="muted">수를 두면 엔진이 응수한 뒤 그 수가 왜 좋은지, 왜 아쉬운지 알려 드려요.</p>';
+  }
+  if (exAi) {
+    const pts = exAi.points.filter((p) => p.positive).slice(0, 2);
+    const mv = H.slice(3 * (mine + 1), 3 * (mine + 2));
+    html += `<div class="ai-intent"><p class="ex-head">엔진의 수 ${moveName(mv)}</p>`;
+    html += pts.length
+      ? `<ul class="ex-pts">${pts.map((p) => `<li class="pos">${esc(fromHumanView(p.text))}</li>`).join('')}</ul>`
+      : '<p class="muted">큰 변화 없이 균형을 유지하는 수예요.</p>';
+    html += '</div>';
+  }
+  if (state.over) html += coachSummary();
+  els.coachBody.innerHTML = html;
+
+  const info = analysisCache.get(hkey(H));
+  const ready = isHumanTurn() && info && info.best;
+  els.hintBtn.disabled = !isHumanTurn() || (!ready && !pendingAnalysis.size);
+  els.hintBtn.textContent = !isHumanTurn()
+    ? '힌트'
+    : ready ? (coachHint ? '힌트 숨기기' : '힌트 (추천 수 보기)') : '힌트 준비 중…';
+  els.hintBtn.classList.toggle('on', coachHint && ready);
+}
+
+// Grade counts of the human's moves, shown at the end of the game.
+function coachSummary() {
+  const H = state.history;
+  const counts = { best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 };
+  let total = 0;
+  for (let i = settings.human; i < H.length / 3; i += 2) {
+    const ex = explainCache.get(hkey(H.slice(0, 3 * (i + 1))));
+    if (!ex) continue;
+    counts[ex.grade]++;
+    total++;
+  }
+  if (!total) return '';
+  const labels = { best: '최선', good: '좋음', inaccuracy: '부정확', mistake: '실수', blunder: '대실수' };
+  const parts = Object.keys(counts).map(
+    (k) => `<span class="grade g-${k}">${labels[k]} ${counts[k]}</span>`,
+  );
+  const won = state.winner === settings.human;
+  return `<div class="coach-sum"><p class="ex-head">${won ? '승리했어요!' : '대국 종료'} · 내 수 ${total}개 평가</p><p class="sum-row">${parts.join(' ')}</p></div>`;
+}
+
+els.hintBtn.addEventListener('click', () => {
+  coachHint = !coachHint;
+  render();
+});
+els.coach.addEventListener('change', () => {
+  try { localStorage.setItem('coach', els.coach.checked ? '1' : '0'); } catch {}
+  if (coachOn() && isHumanTurn()) coachPrepare();
+  render();
+});
+try { if (localStorage.getItem('coach') === '0') els.coach.checked = false; } catch {}
+
 // Expose for debugging and automated checks.
 window.amazons = {
   call,
@@ -839,6 +1038,7 @@ window.amazons = {
   explainCache,
   get analyzing() { return analyzingNow; },
   get busy() { return busy; },
+  get coachBusy() { return coachBusy || pendingAnalysis.size > 0; },
 };
 
 buildBoard();

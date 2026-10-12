@@ -38,6 +38,7 @@
       </label>
     </div>
     <div class="toggles">
+      <label id="coachLabel"><input type="checkbox" id="coach" checked> 친절한 대국 (내 수 해설)</label>
       <label><input type="checkbox" id="heat"> 영역 히트맵 <span class="legend"><i class="lw"></i>백 <i class="lb"></i>흑 <i class="lt"></i>동거리</span></label>
     </div>
     <div class="buttons">
@@ -45,6 +46,10 @@
       <button id="undo" type="button">무르기</button>
       <button id="cancel" type="button">선택 취소</button>
     </div>
+    <section id="coachPanel" class="analysis coach" hidden>
+      <div class="nav"><button id="hintBtn" type="button">힌트</button></div>
+      <div id="coachBody" class="explain" aria-live="polite"></div>
+    </section>
     <section id="analysisPanel" class="analysis" hidden>
       <div class="nav">
         <button id="prev" type="button" aria-label="이전 수">◀</button>

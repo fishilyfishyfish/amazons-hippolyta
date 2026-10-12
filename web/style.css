@@ -309,3 +309,16 @@ button:disabled { opacity: 0.45; cursor: default; }
 .moves td.g-blunder .mark { color: var(--g-blunder); }
 .kibomsg { margin: 0; font-size: 0.85rem; color: var(--muted); min-height: 1em; }
 .kibomsg:empty { display: none; }
+
+/* ---- friendly game ---- */
+#hintBtn.on { background: var(--hint); color: #fff; border-color: var(--hint); }
+.ai-intent { border-top: 1px dashed var(--border); padding-top: 6px; margin-top: 4px; }
+.ai-intent .ex-head { font-weight: 600; font-size: 0.92rem; color: var(--muted); }
+.coach-sum { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 6px; }
+.coach-sum .sum-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.moves td .mark { font-weight: 700; margin-left: 2px; }
+.moves td.g-inaccuracy .mark { color: var(--g-inaccuracy); }
+.moves td.g-mistake .mark { color: var(--g-mistake); }
+.moves td.g-blunder .mark { color: var(--g-blunder); }
+.toggles { display: flex; flex-direction: column; gap: 2px; }
+.toggles label[hidden] { display: none; }

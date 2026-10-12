@@ -195,3 +195,12 @@ fn wasm_explain_move() {
     let v: serde_json::Value = serde_json::from_str(&j).unwrap();
     assert!(v["best"].is_null());
 }
+
+#[test]
+fn winning_move_is_not_described_as_a_counting_fight() {
+    let b = custom(&["a10", "a1"], &["j10"], &["i9", "j9"], Color::White);
+    let m = mv("a10-h10(i10)");
+    let pts = describe(&move_facts(&b, m));
+    assert!(pts[0].text.contains("이겨요"), "{pts:?}");
+    assert!(pts.iter().all(|p| !p.text.contains("칸 수")), "{pts:?}");
+}
