@@ -49,7 +49,8 @@ pub struct MctsConfig {
     pub net_temp: f32,
     /// Node value with a network: 0 = the network's value head, 1 = static
     /// evaluation of the node, 2 = best static evaluation over the kept
-    /// (network-ordered) moves, i.e. the usual 1-ply value on fewer moves.
+    /// (network-ordered) moves, i.e. the usual 1-ply value on fewer moves,
+    /// 3 = the average of 0 and 2.
     pub net_value: u8,
     /// With a network: true = move ordering/priors from its policy, false =
     /// the usual static ordering (the network then only supplies values).
@@ -236,7 +237,7 @@ impl Mcts {
         let value = if best >= WIN_SCORE {
             1.0
         } else if let Some(v) = nn_value {
-            let static_best = (cfg.net_value == 2).then(|| {
+            let static_best = (cfg.net_value >= 2).then(|| {
                 self.edges[first as usize..]
                     .iter()
                     .map(|e| score_after(board, e.mv, &cfg.weights))
@@ -247,6 +248,8 @@ impl Mcts {
                     1.0
                 } else if cfg.endgame_scale > 0.0 && regions_separated(board) {
                     ((sb + 0.5) / cfg.endgame_scale).tanh()
+                } else if cfg.net_value == 3 {
+                    0.5 * (sb / cfg.value_scale).tanh() + 0.5 * v
                 } else {
                     (sb / cfg.value_scale).tanh()
                 }
