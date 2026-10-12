@@ -322,3 +322,23 @@ button:disabled { opacity: 0.45; cursor: default; }
 .moves td.g-blunder .mark { color: var(--g-blunder); }
 .toggles { display: flex; flex-direction: column; gap: 2px; }
 .toggles label[hidden] { display: none; }
+
+/* Mode tabs: play / friendly game / analysis. */
+.modes {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.modes button {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  font-weight: 600;
+  color: var(--muted);
+  border-radius: 7px;
+}
+.modes button.on { background: var(--accent); color: #fff; }
+.controls label[hidden] { display: none; }

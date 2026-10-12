@@ -14,23 +14,24 @@
   </section>
   <aside class="panel">
     <h1>Amazons <span class="sub">Hippolyta</span></h1>
+    <div class="modes" role="tablist" aria-label="모드">
+      <button type="button" role="tab" data-mode="play">대국</button>
+      <button type="button" role="tab" data-mode="coach">친절한 대국</button>
+      <button type="button" role="tab" data-mode="analysis">분석</button>
+    </div>
     <p id="status" class="status" aria-live="polite">엔진 로딩 중…</p>
     <p id="hint" class="hint"></p>
     <div class="evalbar" aria-hidden="true"><div id="evalFill" class="evalfill"></div></div>
     <p id="evalText" class="evaltext"></p>
     <p id="aiInfo" class="aiinfo"></p>
     <div class="controls">
-      <label>상대
+      <label id="opponentLabel">상대
         <select id="opponent">
-          <option value="mcts:2000">MCTS 2초</option>
-          <option value="analysis">분석 모드 (흑백 직접 두기)</option>
-          <option value="mcts:500">MCTS 0.5초</option>
-          <option value="greedy">탐욕 (1수 평가)</option>
-          <option value="random">랜덤</option>
+          <option value="mcts:2000">엔진</option>
           <option value="human">사람 (같은 기기)</option>
         </select>
       </label>
-      <label>내 색
+      <label id="colorLabel">내 색
         <select id="color">
           <option value="0">백 (선)</option>
           <option value="1">흑 (후)</option>
@@ -38,7 +39,6 @@
       </label>
     </div>
     <div class="toggles">
-      <label id="coachLabel"><input type="checkbox" id="coach" checked> 친절한 대국 (내 수 해설)</label>
       <label><input type="checkbox" id="heat"> 영역 히트맵 <span class="legend"><i class="lw"></i>백 <i class="lb"></i>흑 <i class="lt"></i>동거리</span></label>
     </div>
     <div class="buttons">

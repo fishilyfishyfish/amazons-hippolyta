@@ -22,8 +22,6 @@ function snapshot() {
   };
 }
 
-const play = (m) => m.length === 3 && game.play(m[0], m[1], m[2]);
-
 // Runs MCTS for `ms` milliseconds on the current position, posting progress
 // about every 250 ms.
 function search(ms, id, seed, jitter) {
@@ -55,11 +53,6 @@ const handlers = {
     let n = 0;
     while (n < count && game.undo()) n++;
     return n;
-  },
-  aiMove({ kind }) {
-    if (kind === 'random') return play(game.random_move());
-    if (kind === 'greedy') return play(game.greedy_move());
-    return false;
   },
   // Replace the game with a flat [from, to, arrow, ...] move list.
   load({ history }) {

@@ -2,7 +2,9 @@
 
 const FILES = 'abcdefghij';
 const sqName = (sq) => FILES[sq % 10] + (Math.floor(sq / 10) + 1);
-const AI_DELAY_MS = 350; // pause before instant (random/greedy) replies
+// The engine opponent: the strongest setting (MCTS, 2 s per move, all
+// workers). Friendly games always play against it.
+const ENGINE = 'mcts:2000';
 const VALUE_SCALE = 16;   // same squash as the engine: tanh(score / 16)
 
 const els = {
@@ -31,8 +33,9 @@ const els = {
   importKibo: document.getElementById('importKibo'),
   kiboText: document.getElementById('kiboText'),
   kiboMsg: document.getElementById('kiboMsg'),
-  coach: document.getElementById('coach'),
-  coachLabel: document.getElementById('coachLabel'),
+  modes: [...document.querySelectorAll('.modes [data-mode]')],
+  opponentLabel: document.getElementById('opponentLabel'),
+  colorLabel: document.getElementById('colorLabel'),
   coachPanel: document.getElementById('coachPanel'),
   coachBody: document.getElementById('coachBody'),
   hintBtn: document.getElementById('hintBtn'),
@@ -135,7 +138,13 @@ let tree = new Map();    // from -> Map(to -> Set(arrow))
 let sel = { from: -1, to: -1 };
 let busy = false;        // waiting on the worker
 let epoch = 0;           // bumps on new game / undo to drop stale AI turns
-const settings = { opponent: 'mcts:2000', human: 0 };
+// mode: 'play' (engine or human opponent), 'coach' (friendly game against
+// the engine), 'analysis' (both sides by hand).
+const settings = { mode: 'play', opponent: 'mcts:2000', human: 0 };
+try {
+  const m = localStorage.getItem('mode');
+  if (['play', 'coach', 'analysis'].includes(m)) settings.mode = m;
+} catch {}
 let lastAiInfo = null;
 
 function setState(s) {
@@ -152,7 +161,7 @@ function setState(s) {
   sel = { from: -1, to: -1 };
 }
 
-const isAnalysis = () => settings.opponent === 'analysis';
+const isAnalysis = () => settings.mode === 'analysis';
 const isHumanTurn = () =>
   state && !state.over && (settings.opponent === 'human' || isAnalysis() || state.side === settings.human);
 
@@ -174,46 +183,27 @@ async function run(type, args) {
 async function maybeAiTurn() {
   if (!state || state.over || isHumanTurn()) return;
   const my = epoch;
-  const [kind, ms] = settings.opponent.split(':');
+  const ms = settings.opponent.split(':')[1];
   busy = true;
   render();
-  if (kind !== 'mcts') {
-    await new Promise((r) => setTimeout(r, AI_DELAY_MS));
-    if (my !== epoch) return;
-    const before = Array.from(state.history);
-    await run('aiMove', { kind });
-    if (my !== epoch) return;
-    if (coachOn() && state.history.length > before.length) {
-      // Random/greedy AIs do not search: analyse the position after the
-      // human's move separately (helpers only, in the background).
-      const aiMove = Array.from(state.history.slice(before.length, before.length + 3));
-      parallelSearch(ANALYSIS_MS, before, true).then((info) => {
-        if (!info || my !== epoch) return;
-        analysisCache.set(hkey(before), info);
-        coachAfterAi(before, info, aiMove, my);
-      });
-    }
-  } else {
-    const before = Array.from(state.history);
-    liveSearch = true;
-    const info = await parallelSearch(Number(ms));
-    liveSearch = false;
-    if (my !== epoch) return;
-    lastAiInfo = info;
-    showAiInfo(info, false);
-    if (!info || !info.best) {
-      busy = false;
-      render();
-      return;
-    }
-    // The AI's search of this position is also the "after" analysis of the
-    // human's last move.
-    analysisCache.set(hkey(before), info);
-    await run('play', { move: info.best.sq });
-    if (my !== epoch) return;
-    if (coachOn()) coachAfterAi(before, info, info.best.sq, my);
-  }
+  const before = Array.from(state.history);
+  liveSearch = true;
+  const info = await parallelSearch(Number(ms));
+  liveSearch = false;
   if (my !== epoch) return;
+  lastAiInfo = info;
+  showAiInfo(info, false);
+  if (!info || !info.best) {
+    busy = false;
+    render();
+    return;
+  }
+  // The AI's search of this position is also the "after" analysis of the
+  // human's last move.
+  analysisCache.set(hkey(before), info);
+  await run('play', { move: info.best.sq });
+  if (my !== epoch) return;
+  if (coachOn()) coachAfterAi(before, info, info.best.sq, my);
   if (coachOn() && isHumanTurn()) coachPrepare();
   maybeAiTurn();
 }
@@ -376,7 +366,7 @@ function renderEval() {
   if (state.over) v = state.winner === 0 ? 1 : -1;
   else v = Math.tanh(e.score / VALUE_SCALE);
   els.evalFill.style.width = pct(v);
-  const sign = (x) => (x >= 0 ? '+' : '') + x.toFixed(1);
+  const sign = (x) => (Math.abs(x) < 0.05 ? '0.0' : (x > 0 ? '+' : '') + x.toFixed(1));
   els.evalText.textContent = state.over
     ? ''
     : `정적 평가 (백 기준) ${sign(e.score)} · 영역 ${sign(e.t1)} · 국면 ${e.phase >= 0.99 ? '초반' : e.phase > 0.3 ? '중반' : '종반'}`;
@@ -400,8 +390,7 @@ function renderStatus() {
       : sel.from >= 0 ? '이동할 칸을 고르세요.'
       : '움직일 아마존을 고르세요.';
   } else {
-    const name = els.opponent.selectedOptions[0].textContent;
-    text = `${colorName(s.side)} (${name}) 생각 중…`;
+    text = `${colorName(s.side)} (엔진) 생각 중…`;
   }
   if (isAnalysis() && analyzingNow) hint = '분석 중…';
   els.status.textContent = text;
@@ -505,11 +494,17 @@ els.cancel.addEventListener('click', () => {
 });
 
 async function newGame() {
-  settings.opponent = els.opponent.value;
+  settings.opponent = isAnalysis() ? 'analysis' : settings.mode === 'coach' ? ENGINE : els.opponent.value;
   settings.human = Number(els.color.value);
+  for (const b of els.modes) {
+    const on = b.dataset.mode === settings.mode;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-selected', String(on));
+  }
+  els.opponentLabel.hidden = settings.mode !== 'play';
+  els.colorLabel.hidden = isAnalysis() || settings.opponent === 'human';
   lastAiInfo = null;
   showAiInfo(null);
-  els.color.disabled = settings.opponent === 'human' || isAnalysis();
   els.analysisPanel.hidden = !isAnalysis();
   els.undo.textContent = isAnalysis() ? '한 수 뒤로' : '무르기';
   line = [];
@@ -895,7 +890,7 @@ els.importKibo.addEventListener('click', async () => {
 const pendingAnalysis = new Map(); // history key -> Promise<info> (helpers only)
 let coachHint = false;
 
-const coachOn = () => !isAnalysis() && settings.opponent !== 'human' && els.coach.checked;
+const coachOn = () => settings.mode === 'coach';
 
 // Starts the background analysis of the current position (human to move).
 function coachPrepare() {
@@ -953,7 +948,6 @@ function fromHumanView(text) {
 function renderCoach() {
   const on = coachOn() && state;
   els.coachPanel.hidden = !on;
-  els.coachLabel.hidden = isAnalysis() || settings.opponent === 'human';
   if (!on) return;
   const H = state.history;
   const plies = H.length / 3;
@@ -1020,12 +1014,14 @@ els.hintBtn.addEventListener('click', () => {
   coachHint = !coachHint;
   render();
 });
-els.coach.addEventListener('change', () => {
-  try { localStorage.setItem('coach', els.coach.checked ? '1' : '0'); } catch {}
-  if (coachOn() && isHumanTurn()) coachPrepare();
-  render();
-});
-try { if (localStorage.getItem('coach') === '0') els.coach.checked = false; } catch {}
+for (const b of els.modes) {
+  b.addEventListener('click', () => {
+    if (b.dataset.mode === settings.mode) return;
+    settings.mode = b.dataset.mode;
+    try { localStorage.setItem('mode', settings.mode); } catch {}
+    newGame();
+  });
+}
 
 // Expose for debugging and automated checks.
 window.amazons = {
