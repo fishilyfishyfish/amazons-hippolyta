@@ -49,6 +49,7 @@
     </div>
     <section id="coachPanel" class="analysis coach" hidden>
       <div class="nav"><button id="hintBtn" type="button">힌트</button></div>
+      <p id="coachLegend" class="hintlegend" hidden><span class="hm">1</span> 움직일 아마존 → <span class="hm">2</span> 도착 칸 → <span class="hm">3</span> 화살</p>
       <div id="coachBody" class="explain" aria-live="polite"></div>
     </section>
     <section id="bookPanel" class="analysis book" hidden>
@@ -57,6 +58,7 @@
         <button id="bookStart" type="button">처음으로</button>
       </div>
       <p id="bookInfo" class="posinfo"></p>
+      <p class="hintlegend">고른 수: <span class="hm">1</span> 움직일 아마존 → <span class="hm">2</span> 도착 칸 → <span class="hm">3</span> 화살</p>
       <div id="bookList" class="booklist"></div>
     </section>
     <section id="analysisPanel" class="analysis" hidden>
@@ -65,6 +67,7 @@
         <button id="next" type="button" aria-label="다음 수">▶</button>
         <button id="showBest" type="button" aria-pressed="false">추천 수 보기</button>
       </div>
+      <p id="analysisLegend" class="hintlegend" hidden><span class="hm">1</span> 움직일 아마존 → <span class="hm">2</span> 도착 칸 → <span class="hm">3</span> 화살</p>
       <p id="posInfo" class="posinfo"></p>
       <div id="graph" class="graph" aria-label="백 승률 그래프"></div>
       <div id="explain" class="explain" aria-live="polite"></div>

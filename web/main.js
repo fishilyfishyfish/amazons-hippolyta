@@ -39,6 +39,8 @@ const els = {
   coachPanel: document.getElementById('coachPanel'),
   coachBody: document.getElementById('coachBody'),
   hintBtn: document.getElementById('hintBtn'),
+  coachLegend: document.getElementById('coachLegend'),
+  analysisLegend: document.getElementById('analysisLegend'),
   bookPanel: document.getElementById('bookPanel'),
   bookBack: document.getElementById('bookBack'),
   bookStart: document.getElementById('bookStart'),
@@ -265,6 +267,11 @@ function buildBoard() {
     d.type = 'button';
     d.className = 'cell';
     d.addEventListener('click', () => onCell(Number(d.dataset.sq)));
+    // Numbered badge for hinted moves: 1 from, 2 to, 3 arrow.
+    const mark = document.createElement('span');
+    mark.className = 'hm';
+    mark.setAttribute('aria-hidden', 'true');
+    d.appendChild(mark);
     cellEls.push(d);
     els.board.appendChild(d);
   }
@@ -335,11 +342,20 @@ function render() {
     if (targets && targets.has(sq)) cls.push('target', targetClass);
     if (v === 0 && gained.has(sq)) cls.push('chg-gain');
     if (v === 0 && lost.has(sq)) cls.push('chg-loss');
+    let mark = '';
     if (hintMove) {
-      if (sq === hintMove[0]) cls.push('hint-from');
-      if (sq === hintMove[1]) cls.push('hint-to');
-      if (sq === hintMove[2]) cls.push('hint-arrow');
+      // The arrow may land on the vacated start square: show both numbers.
+      const n = [];
+      if (sq === hintMove[0]) { cls.push('hint-from'); n.push('1'); }
+      if (sq === hintMove[1]) { cls.push('hint-to', state.side === 0 ? 'ghost-w' : 'ghost-b'); n.push('2'); }
+      if (sq === hintMove[2]) {
+        // Arrow back onto the start square: keep the amazon drawn there.
+        if (sq !== hintMove[0]) cls.push('hint-arrow');
+        n.push('3');
+      }
+      mark = n.join('·');
     }
+    if (el.firstChild.textContent !== mark) el.firstChild.textContent = mark;
     if (human && sel.from < 0 && tree.has(sq)) cls.push('movable');
     el.className = cls.join(' ');
     // Coordinates on the edge squares.
@@ -714,7 +730,7 @@ function explanationHtml(ex, n, mv, who = '') {
   if (ex.points.length) html += `<ul class="ex-pts">${ex.points.map(li).join('')}</ul>`;
   if (ex.replyPoints.length) html += `<ul class="ex-pts threat">${ex.replyPoints.map((p) => `<li class="neg">${esc(p.text)}</li>`).join('')}</ul>`;
   if (ex.best) {
-    html += `<p class="ex-best">${ex.grade === 'good' ? '비슷하게 좋은 대안' : '추천 수'}: <b>${ex.best.move}</b></p>`;
+    html += `<p class="ex-best">${ex.grade === 'good' ? '그 국면의 비슷하게 좋은 대안' : '그 국면의 추천 수'}: <b>${ex.best.move}</b></p>`;
     if (ex.bestPoints.length) html += `<ul class="ex-pts">${ex.bestPoints.map(li).join('')}</ul>`;
   }
   html += `<p class="ex-bal">${esc(ex.balance)}</p>`;
@@ -729,6 +745,7 @@ function renderAnalysis() {
   els.analyzeAll.disabled = busy || line.length === 0;
   els.showBest.setAttribute('aria-pressed', String(showBest));
   els.showBest.classList.toggle('on', showBest);
+  els.analysisLegend.hidden = !showBest;
 
   const info = analysisCache.get(hkey(state.history));
   if (state.over) {
@@ -1001,6 +1018,7 @@ function renderCoach() {
     ? '힌트'
     : ready ? (coachHint ? '힌트 숨기기' : '힌트 (추천 수 보기)') : '힌트 준비 중…';
   els.hintBtn.classList.toggle('on', coachHint && ready);
+  els.coachLegend.hidden = !(coachHint && ready);
 }
 
 // Grade counts of the human's moves, shown at the end of the game.
