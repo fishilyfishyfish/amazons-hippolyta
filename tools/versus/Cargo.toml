@@ -1,0 +1,17 @@
+# Plays the current engine against an earlier commit of itself.
+# Not part of CI; run with `cargo run --release -- <A> <B> [pairs] [plies] [seed]`
+# where a spec prefixed with `v1:` uses the pinned old engine.
+[package]
+name = "amazons-versus"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+cur = { package = "amazons-engine", path = "../../engine" }
+v1 = { package = "amazons-engine", git = "https://github.com/fishilyfishyfish/amazons-hippolyta", rev = "31df4b9" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
