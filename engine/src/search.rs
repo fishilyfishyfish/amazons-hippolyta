@@ -51,6 +51,9 @@ pub struct MctsConfig {
     /// evaluation of the node, 2 = best static evaluation over the kept
     /// (network-ordered) moves, i.e. the usual 1-ply value on fewer moves.
     pub net_value: u8,
+    /// With a network: true = move ordering/priors from its policy, false =
+    /// the usual static ordering (the network then only supplies values).
+    pub net_policy: bool,
 }
 
 impl Default for MctsConfig {
@@ -69,6 +72,7 @@ impl Default for MctsConfig {
             net: 0,
             net_temp: 1.0,
             net_value: 0,
+            net_policy: true,
         }
     }
 }
@@ -167,6 +171,13 @@ impl Mcts {
         let cfg = self.config;
         let mut nn_value = None;
         let mut complete = match &self.net {
+            Some(net) if !cfg.net_policy => {
+                let c = score_moves(board, &cfg, &mut self.scratch, &mut self.scored);
+                if !self.scored.is_empty() {
+                    nn_value = Some(net.eval(board).value);
+                }
+                c
+            }
             Some(net) => {
                 nn_value = Some(score_moves_nn(
                     board,
@@ -201,7 +212,7 @@ impl Mcts {
         }
         self.scored.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         let best = self.scored[0].0;
-        let temp = if nn_value.is_some() {
+        let temp = if nn_value.is_some() && cfg.net_policy {
             cfg.net_temp
         } else {
             cfg.prior_temp

@@ -67,6 +67,7 @@ impl PlayerSpec {
                 "nn" => cfg.net = crate::nn::load_net_file(v.trim())?,
                 "ntemp" => cfg.net_temp = num(v)?,
                 "nval" => cfg.net_value = num(v)? as u8,
+                "npol" => cfg.net_policy = num(v)? != 0.0,
                 "par" => par = num(v)? as u32,
                 "w_tie" => cfg.weights.tie = num(v)?,
                 "w_phase" => cfg.weights.phase_w = num(v)?,
