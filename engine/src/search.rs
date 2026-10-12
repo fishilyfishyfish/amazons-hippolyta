@@ -44,7 +44,7 @@ impl Default for MctsConfig {
             top_k: 40,
             half_k: 16,
             prior_temp: 2.0,
-            value_scale: 8.0,
+            value_scale: 16.0,
             fpu_reduction: 0.2,
             jitter: 0.0,
             seed: 0,

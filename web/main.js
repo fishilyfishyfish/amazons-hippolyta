@@ -3,7 +3,7 @@
 const FILES = 'abcdefghij';
 const sqName = (sq) => FILES[sq % 10] + (Math.floor(sq / 10) + 1);
 const AI_DELAY_MS = 350; // pause before instant (random/greedy) replies
-const VALUE_SCALE = 8;    // same squash as the engine: tanh(score / 8)
+const VALUE_SCALE = 16;   // same squash as the engine: tanh(score / 16)
 
 const els = {
   board: document.getElementById('board'),

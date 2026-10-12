@@ -168,9 +168,9 @@ impl Default for EvalWeights {
             phase_w: 40.0,
             t1_end: 1.0,
             t1_open: 0.5,
-            t2: 0.3,
-            c1: 0.4,
-            c2: 0.3,
+            t2: 0.6,
+            c1: 0.0,
+            c2: 0.6,
             mobility: 1.0,
         }
     }
