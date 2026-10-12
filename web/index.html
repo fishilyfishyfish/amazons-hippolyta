@@ -18,6 +18,7 @@
       <button type="button" role="tab" data-mode="play">대국</button>
       <button type="button" role="tab" data-mode="coach">친절한 대국</button>
       <button type="button" role="tab" data-mode="analysis">분석</button>
+      <button type="button" role="tab" data-mode="book">오프닝</button>
     </div>
     <p id="status" class="status" aria-live="polite">엔진 로딩 중…</p>
     <p id="hint" class="hint"></p>
@@ -49,6 +50,14 @@
     <section id="coachPanel" class="analysis coach" hidden>
       <div class="nav"><button id="hintBtn" type="button">힌트</button></div>
       <div id="coachBody" class="explain" aria-live="polite"></div>
+    </section>
+    <section id="bookPanel" class="analysis book" hidden>
+      <div class="nav">
+        <button id="bookBack" type="button" aria-label="한 수 뒤로">◀</button>
+        <button id="bookStart" type="button">처음으로</button>
+      </div>
+      <p id="bookInfo" class="posinfo"></p>
+      <div id="bookList" class="booklist"></div>
     </section>
     <section id="analysisPanel" class="analysis" hidden>
       <div class="nav">

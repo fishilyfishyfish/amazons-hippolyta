@@ -882,3 +882,210 @@ pub fn analyze_move(board: &Board, played: Move, cfg: MctsConfig, iterations: u3
         p_after,
     )
 }
+
+/// Pros and cons of one opening-book move, from the mover's point of view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BookNotes {
+    pub summary: String,
+    pub pros: Vec<String>,
+    pub cons: Vec<String>,
+}
+
+/// Opening-book commentary for `m` in `board`. Unlike `explain`, small
+/// differences matter here (the point is comparing the candidate moves of a
+/// position), so the thresholds are lower and every move gets both sides.
+/// `best` is the engine's top move in `board`, `gap` how many win-probability
+/// points (0–100) `m` is behind it, `reply` the opponent's expected answer.
+pub fn book_notes(board: &Board, m: Move, best: Move, gap: f32, reply: Option<Move>) -> BookNotes {
+    let f = move_facts(board, m);
+    let mut pros: Vec<(i32, String)> = Vec::new();
+    let mut cons: Vec<(i32, String)> = Vec::new();
+
+    let mine = f.mine_after as i32 - f.mine_before as i32;
+    let theirs = f.opp_after as i32 - f.opp_before as i32;
+    let net = mine - theirs;
+    if net >= 4 {
+        pros.push((
+            net,
+            format!("먼저 닿는 땅을 넓혀요 (내 땅 {mine:+}칸, 상대 땅 {theirs:+}칸)."),
+        ));
+    } else if net <= 1 {
+        cons.push((
+            4 - net,
+            format!("당장 늘어나는 땅은 적어요 (영역 차이 {net:+}칸)."),
+        ));
+    }
+    if f.secure_mine_after >= f.secure_opp_after + 4 {
+        pros.push((
+            3,
+            format!(
+                "상대보다 두 수 이상 가까운 '확실한 땅'에서 앞서요 (내 {}칸, 상대 {}칸).",
+                f.secure_mine_after, f.secure_opp_after
+            ),
+        ));
+    } else if f.secure_opp_after >= f.secure_mine_after + 4 {
+        cons.push((
+            3,
+            format!(
+                "'확실한 땅'은 아직 상대가 더 많아요 (내 {}칸, 상대 {}칸).",
+                f.secure_mine_after, f.secure_opp_after
+            ),
+        ));
+    }
+
+    // Pressure on the opponent's amazons: the biggest squeeze.
+    if let Some((b, a)) = f
+        .opp_amazons
+        .iter()
+        .max_by_key(|(b, a)| b.mobility as i32 - a.mobility as i32)
+    {
+        let drop = b.mobility as i32 - a.mobility as i32;
+        if drop >= 4 {
+            pros.push((
+                drop,
+                format!(
+                    "상대 {} 아마존의 길을 좁혀요 (한 번에 갈 수 있는 칸 {} → {}).",
+                    square_name(a.sq),
+                    b.mobility,
+                    a.mobility
+                ),
+            ));
+        }
+    }
+
+    // The moved amazon and the ones left behind.
+    for (b, a) in &f.my_amazons {
+        let name = square_name(a.sq);
+        if b.sq != a.sq {
+            if a.mobility >= b.mobility + 4 {
+                pros.push((
+                    (a.mobility - b.mobility) as i32 / 2 + 2,
+                    format!(
+                        "{}의 아마존을 {name}{} 꺼내 활동 칸이 늘어요 ({} → {}).",
+                        square_name(b.sq),
+                        ro(a.sq),
+                        b.mobility,
+                        a.mobility
+                    ),
+                ));
+            } else if a.mobility <= 8 && a.mobility < b.mobility {
+                cons.push((
+                    12 - a.mobility as i32,
+                    format!(
+                        "옮긴 {name} 아마존의 활동 칸이 {} → {}로 줄어 나중에 갇힐 위험이 있어요.",
+                        b.mobility, a.mobility
+                    ),
+                ));
+            }
+        } else if b.mobility >= a.mobility + 4 {
+            cons.push((
+                (b.mobility - a.mobility) as i32,
+                format!(
+                    "내 {name} 아마존이 답답해져요 (활동 칸 {} → {}).",
+                    b.mobility, a.mobility
+                ),
+            ));
+        } else if a.mobility <= 6 {
+            cons.push((
+                7 - a.mobility as i32,
+                format!(
+                    "내 {name} 아마존은 아직 활동 칸이 {}칸뿐이라 묶여 있어요.",
+                    a.mobility
+                ),
+            ));
+        }
+    }
+
+    // The arrow.
+    if f.arrow_took_from_opp >= 1 {
+        pros.push((
+            f.arrow_took_from_opp + 1,
+            format!(
+                "{} 화살이 상대 쪽 길을 막아 상대 땅을 {}칸 줄여요.",
+                square_name(m.arrow),
+                f.arrow_took_from_opp
+            ),
+        ));
+    }
+    if f.arrow_cost_me >= 1 {
+        cons.push((
+            f.arrow_cost_me + 1,
+            format!(
+                "{} 화살이 내 땅도 {}칸 깎아요.",
+                square_name(m.arrow),
+                f.arrow_cost_me
+            ),
+        ));
+    }
+    if f.contested_after + 3 <= f.contested_before {
+        pros.push((
+            2,
+            format!(
+                "경합 칸을 줄여 형세를 정리해요 ({} → {}칸).",
+                f.contested_before, f.contested_after
+            ),
+        ));
+    }
+
+    // The opponent's expected answer.
+    let mut after = *board;
+    after.make_move(m);
+    if let Some(r) = reply.filter(|r| after.is_legal(*r)) {
+        let rf = move_facts(&after, r);
+        // Real threats (amazons hemmed in, regions sealed) are warnings;
+        // the opponent winning some land back is the normal exchange and is
+        // stated plainly.
+        let threat = describe_threat(&rf)
+            .into_iter()
+            .find(|t| !t.text.contains("영역을"));
+        if let Some(t) = threat {
+            cons.push((t.weight.min(15), t.text));
+        } else {
+            let rnet = net_territory(&rf);
+            if rnet >= 5 {
+                cons.push((
+                    rnet.min(10) / 2,
+                    format!(
+                        "상대는 {r}{} 응수해 땅을 {rnet}칸가량 되찾을 수 있어요.",
+                        move_ro(r)
+                    ),
+                ));
+            }
+        }
+    }
+
+    // Against the best move.
+    if m != best && gap >= 1.0 {
+        let mut text = format!("최선수 {best}보다 승률이 {}%p 낮아요.", gap.round() as i32);
+        let bf = move_facts(board, best);
+        let d = net_territory(&bf) - net;
+        if d >= 3 {
+            text.push_str(&format!(" 최선수는 영역 차이를 {d}칸 더 벌려요."));
+        }
+        cons.push((20 + gap as i32, text));
+    }
+
+    let summary = if m == best {
+        "엔진의 최선수".to_string()
+    } else if gap < 2.0 {
+        "최선과 거의 같은 수".to_string()
+    } else if gap < 6.0 {
+        "무난한 대안".to_string()
+    } else {
+        "덜 좋은 선택".to_string()
+    };
+
+    let finish = |mut v: Vec<(i32, String)>, empty: &str| {
+        v.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut out: Vec<String> = v.into_iter().map(|(_, t)| t).take(3).collect();
+        if out.is_empty() {
+            out.push(empty.to_string());
+        }
+        out
+    };
+    BookNotes {
+        summary,
+        pros: finish(pros, "큰 이득은 없지만 형세를 무난하게 유지해요."),
+        cons: finish(cons, "뚜렷한 약점은 보이지 않아요."),
+    }
+}

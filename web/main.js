@@ -39,6 +39,11 @@ const els = {
   coachPanel: document.getElementById('coachPanel'),
   coachBody: document.getElementById('coachBody'),
   hintBtn: document.getElementById('hintBtn'),
+  bookPanel: document.getElementById('bookPanel'),
+  bookBack: document.getElementById('bookBack'),
+  bookStart: document.getElementById('bookStart'),
+  bookInfo: document.getElementById('bookInfo'),
+  bookList: document.getElementById('bookList'),
 };
 
 // ---- worker RPC -----------------------------------------------------------
@@ -139,15 +144,16 @@ let sel = { from: -1, to: -1 };
 let busy = false;        // waiting on the worker
 let epoch = 0;           // bumps on new game / undo to drop stale AI turns
 // mode: 'play' (engine or human opponent), 'coach' (friendly game against
-// the engine), 'analysis' (both sides by hand).
+// the engine), 'analysis' (both sides by hand), 'book' (opening book).
 const settings = { mode: 'play', opponent: 'mcts:2000', human: 0 };
 try {
   const m = localStorage.getItem('mode');
-  if (['play', 'coach', 'analysis'].includes(m)) settings.mode = m;
+  if (['play', 'coach', 'analysis', 'book'].includes(m)) settings.mode = m;
 } catch {}
 let lastAiInfo = null;
 
 function setState(s) {
+  if (!state || s.history.length !== state.history.length) bookSel = 0;
   state = s;
   tree = new Map();
   const L = s.legal;
@@ -162,8 +168,9 @@ function setState(s) {
 }
 
 const isAnalysis = () => settings.mode === 'analysis';
+const isBook = () => settings.mode === 'book';
 const isHumanTurn = () =>
-  state && !state.over && (settings.opponent === 'human' || isAnalysis() || state.side === settings.human);
+  state && !state.over && (settings.opponent === 'human' || isAnalysis() || isBook() || state.side === settings.human);
 
 async function run(type, args) {
   busy = true;
@@ -295,7 +302,9 @@ function render() {
   const ex = isAnalysis() && sel.from < 0 ? currentExplanation() : null;
   const gained = new Set(ex ? ex.gained : []);
   const lost = new Set(ex ? ex.lost : []);
-  const hintMove = (isAnalysis() ? showBest : coachHint) && sel.from < 0 ? currentBestMove() : null;
+  const hintMove = sel.from < 0
+    ? isBook() ? bookHintMove() : (isAnalysis() ? showBest : coachHint) ? currentBestMove() : null
+    : null;
   const heatOn = els.heat.checked;
 
   for (let i = 0; i < 100; i++) {
@@ -345,6 +354,7 @@ function render() {
   renderMoves();
   renderAnalysis();
   renderCoach();
+  renderBook();
   els.undo.disabled = busy || undoCount() === 0;
   els.cancel.disabled = sel.from < 0;
 }
@@ -464,7 +474,7 @@ function onCell(sq) {
 function undoCount() {
   if (!state) return 0;
   const plies = state.history.length / 3;
-  if (settings.opponent === 'human' || isAnalysis()) return plies > 0 ? 1 : 0;
+  if (settings.opponent === 'human' || isAnalysis() || isBook()) return plies > 0 ? 1 : 0;
   // Ply i (0-based) was played by colour i % 2.
   for (let i = plies - 1; i >= 0; i--) {
     if (i % 2 === settings.human) return plies - i;
@@ -494,7 +504,7 @@ els.cancel.addEventListener('click', () => {
 });
 
 async function newGame() {
-  settings.opponent = isAnalysis() ? 'analysis' : settings.mode === 'coach' ? ENGINE : els.opponent.value;
+  settings.opponent = isAnalysis() ? 'analysis' : isBook() ? 'book' : settings.mode === 'coach' ? ENGINE : els.opponent.value;
   settings.human = Number(els.color.value);
   for (const b of els.modes) {
     const on = b.dataset.mode === settings.mode;
@@ -502,7 +512,8 @@ async function newGame() {
     b.setAttribute('aria-selected', String(on));
   }
   els.opponentLabel.hidden = settings.mode !== 'play';
-  els.colorLabel.hidden = isAnalysis() || settings.opponent === 'human';
+  els.colorLabel.hidden = isAnalysis() || isBook() || settings.opponent === 'human';
+  els.bookPanel.hidden = !isBook();
   lastAiInfo = null;
   showAiInfo(null);
   els.analysisPanel.hidden = !isAnalysis();
@@ -514,7 +525,9 @@ async function newGame() {
   epoch++;
   await run('newGame');
   coachHint = false;
+  bookSel = 0;
   if (isAnalysis()) ensureAnalyzed();
+  else if (isBook()) loadBook();
   else {
     if (coachOn() && isHumanTurn()) coachPrepare();
     maybeAiTurn();
@@ -556,7 +569,7 @@ const GRADE_MARK = { best: '', good: '', inaccuracy: '?!', mistake: '?', blunder
 const flat = (moves) => moves.flat();
 const hkey = (hist) => Array.from(hist).join(',');
 const moveName = (m) => `${sqName(m[0])}-${sqName(m[1])}(${sqName(m[2])})`;
-const isFlipped = () => !isAnalysis() && settings.opponent !== 'human' && settings.human === 1;
+const isFlipped = () => !isAnalysis() && !isBook() && settings.opponent !== 'human' && settings.human === 1;
 
 function plyOf() {
   return state.history.length / 3;
@@ -1023,6 +1036,102 @@ for (const b of els.modes) {
   });
 }
 
+// ---- opening book -----------------------------------------------------------
+//
+// web/book.json is generated offline (engine/examples/book.rs): for every
+// position of the first plies, the engine's top moves with win rates, the
+// expected continuation and pros/cons. Keys are the move notation joined by
+// spaces ("" = start position).
+
+let book = null;
+let bookSel = 0;
+
+async function loadBook() {
+  if (book) return render();
+  els.bookInfo.textContent = '오프닝 북을 불러오는 중…';
+  try {
+    const r = await fetch(new URL('./book.json', import.meta.url));
+    book = await r.json();
+  } catch (err) {
+    els.bookInfo.textContent = '오프닝 북을 불러오지 못했어요.';
+    return;
+  }
+  render();
+}
+
+const bookEntry = () => (book && state ? book.nodes[state.notation.join(' ')] : null);
+
+function bookHintMove() {
+  const e = bookEntry();
+  return e && e.moves[bookSel] ? e.moves[bookSel].sq : null;
+}
+
+function renderBook() {
+  if (!isBook() || !state) return;
+  const n = state.history.length / 3;
+  els.bookBack.disabled = busy || n === 0;
+  els.bookStart.disabled = busy || n === 0;
+  if (!book) return;
+  const e = bookEntry();
+  if (!e) {
+    els.bookInfo.textContent = `${n}수째 · 북에 없는 국면이에요.`;
+    els.bookList.innerHTML =
+      `<p class="muted">오프닝 북은 처음 ${book.depth}수까지, 국면마다 엔진이 고른 상위 ${book.width}개 수만 담고 있어요.</p>` +
+      '<button id="toAnalysis" type="button">분석 모드에서 이어서 보기</button>';
+    return;
+  }
+  const side = e.side;
+  els.bookInfo.textContent = `${n}수째 · ${side} 차례 · 최선을 두면 ${side} 승률 ${Math.round(e.win)}%`;
+  const li = (cls) => (t) => `<li class="${cls}">${esc(t)}</li>`;
+  els.bookList.innerHTML = e.moves.map((m, i) => {
+    const tag = i === 0 ? 'best' : m.summary.includes('거의') ? 'good' : m.summary.includes('무난') ? 'inaccuracy' : 'mistake';
+    const mirror = m.mirror ? `<span class="mirror">좌우 대칭 ${m.mirror}도 같아요</span>` : '';
+    return `<div class="bookmove${i === bookSel ? ' sel' : ''}" data-i="${i}">
+      <p class="ex-head"><span class="rank">${i + 1}</span> <b>${m.move}</b> <span class="grade g-${tag}">${esc(m.summary)}</span> <span class="win">${side} ${Math.round(m.win)}%</span></p>
+      ${mirror}
+      <ul class="ex-pts">${m.pros.map(li('pos')).join('')}${m.cons.map(li('neg')).join('')}</ul>
+      <p class="line">대표 수순: ${m.line.map(esc).join(' ')}</p>
+      <button type="button" class="play" data-i="${i}">이 수 두기</button>
+    </div>`;
+  }).join('');
+}
+
+els.bookList.addEventListener('click', async (ev) => {
+  if (ev.target.id === 'toAnalysis') return openInAnalysis();
+  const card = ev.target.closest('.bookmove');
+  if (!card || busy) return;
+  const i = Number(card.dataset.i);
+  if (ev.target.classList.contains('play')) {
+    const m = bookEntry().moves[i];
+    bookSel = 0;
+    await run('play', { move: m.sq });
+  } else {
+    bookSel = i;
+    render();
+  }
+});
+els.bookBack.addEventListener('click', async () => {
+  bookSel = 0;
+  await run('undo', { count: 1 });
+});
+els.bookStart.addEventListener('click', async () => {
+  bookSel = 0;
+  await run('newGame');
+});
+
+// Continue the current line in analysis mode.
+async function openInAnalysis() {
+  const h = Array.from(state.history);
+  settings.mode = 'analysis';
+  try { localStorage.setItem('mode', settings.mode); } catch {}
+  await newGame();
+  analysisToken++;
+  await run('load', { history: h });
+  line = [];
+  for (let i = 0; i < h.length; i += 3) line.push(h.slice(i, i + 3));
+  ensureAnalyzed();
+}
+
 // Expose for debugging and automated checks.
 window.amazons = {
   call,
@@ -1030,6 +1139,7 @@ window.amazons = {
   get state() { return state; },
   get lastAiInfo() { return lastAiInfo; },
   get line() { return line; },
+  get book() { return book; },
   analysisCache,
   explainCache,
   get analyzing() { return analyzingNow; },

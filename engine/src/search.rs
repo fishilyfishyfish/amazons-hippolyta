@@ -385,8 +385,27 @@ impl Mcts {
 
     /// Principal variation: most-visited edges from the root.
     pub fn pv(&self, max_len: usize) -> Vec<Move> {
+        self.pv_from(0, max_len)
+    }
+
+    /// The expected continuation after root move `mv` (starting with `mv`),
+    /// or just `[mv]` if it was never explored.
+    pub fn line_after(&self, mv: Move, max_len: usize) -> Vec<Move> {
+        let root = &self.nodes[0];
+        let range = root.first_edge as usize..(root.first_edge + root.num_edges) as usize;
+        let Some(e) = range.map(|i| &self.edges[i]).find(|e| e.mv == mv) else {
+            return vec![mv];
+        };
+        let mut out = vec![mv];
+        if e.child != 0 && max_len > 1 {
+            out.extend(self.pv_from(e.child as usize, max_len - 1));
+        }
+        out
+    }
+
+    fn pv_from(&self, start: usize, max_len: usize) -> Vec<Move> {
         let mut out = Vec::new();
-        let mut node = 0usize;
+        let mut node = start;
         while out.len() < max_len {
             let nd = &self.nodes[node];
             if !nd.expanded || nd.num_edges == 0 {

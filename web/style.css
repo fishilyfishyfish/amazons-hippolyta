@@ -342,3 +342,24 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .modes button.on { background: var(--accent); color: #fff; }
 .controls label[hidden] { display: none; }
+
+/* ---- opening book ---- */
+.booklist { display: flex; flex-direction: column; gap: 8px; }
+.bookmove {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  background: var(--bg);
+}
+.bookmove.sel { border-color: var(--hint); box-shadow: 0 0 0 2px var(--hint) inset; }
+.bookmove .ex-head { margin: 0 0 4px; }
+.bookmove .rank {
+  display: inline-grid; place-items: center;
+  width: 1.6em; height: 1.6em; border-radius: 50%;
+  background: var(--border); font-size: 0.85rem;
+}
+.bookmove .win { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
+.bookmove .mirror { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }
+.bookmove .line { margin: 2px 0 6px; font-size: 0.82rem; color: var(--muted); font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.bookmove .play { min-height: 36px; font-size: 0.9rem; }
