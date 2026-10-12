@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f2a24">
+<title>Amazons — Hippolyta</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="layout">
+  <section class="board-wrap">
+    <div id="board" class="board" aria-label="아마존 게임판" role="grid"></div>
+  </section>
+  <aside class="panel">
+    <h1>Amazons <span class="sub">Hippolyta</span></h1>
+    <p id="status" class="status" aria-live="polite">엔진 로딩 중…</p>
+    <p id="hint" class="hint"></p>
+    <div class="controls">
+      <label>상대
+        <select id="opponent">
+          <option value="random">랜덤 AI</option>
+          <option value="human">사람 (같은 기기)</option>
+        </select>
+      </label>
+      <label>내 색
+        <select id="color">
+          <option value="0">백 (선)</option>
+          <option value="1">흑 (후)</option>
+        </select>
+      </label>
+    </div>
+    <div class="buttons">
+      <button id="newGame" type="button">새 게임</button>
+      <button id="undo" type="button">무르기</button>
+      <button id="cancel" type="button">선택 취소</button>
+    </div>
+    <div class="moves-wrap">
+      <table class="moves">
+        <thead><tr><th>#</th><th>백</th><th>흑</th></tr></thead>
+        <tbody id="moves"></tbody>
+      </table>
+    </div>
+  </aside>
+</main>
+<script type="module" src="main.js"></script>
+</body>
+</html>

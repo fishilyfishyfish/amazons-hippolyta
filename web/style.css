@@ -1,0 +1,209 @@
+:root {
+  --bg: #f3f1ea;
+  --fg: #1d221f;
+  --muted: #5d6660;
+  --panel: #ffffff;
+  --border: #d6d2c4;
+  --sq-light: #e8dcc0;
+  --sq-dark: #c9b48a;
+  --accent: #2f7d5b;
+  --move-dot: rgba(30, 110, 75, 0.75);
+  --arrow-dot: rgba(180, 50, 40, 0.8);
+  --last: rgba(240, 190, 40, 0.9);
+  --arrow-tile: #4a3b2c;
+  --piece-white: #fbfaf6;
+  --piece-black: #222;
+  --cur: #fff2b8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161a18;
+    --fg: #e6e9e6;
+    --muted: #9aa39d;
+    --panel: #1f2522;
+    --border: #333b37;
+    --sq-light: #b9ab8c;
+    --sq-dark: #8f7c58;
+    --cur: #4a4420;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans KR", sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: max(10px, env(safe-area-inset-top)) 12px 16px;
+  min-height: 100dvh;
+}
+
+/* Board fills the smaller viewport dimension, leaving room for the panel. */
+.board-wrap {
+  width: min(96vw, 64dvh);
+  padding: 0 0 18px 18px; /* room for coordinates */
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-template-rows: repeat(10, minmax(0, 1fr));
+  aspect-ratio: 1;
+  width: 100%;
+  border: 2px solid #5b4a33;
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.cell {
+  position: relative;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 0;
+  cursor: default;
+  -webkit-tap-highlight-color: transparent;
+}
+.cell.light { --sq: var(--sq-light); }
+.cell.dark { --sq: var(--sq-dark); }
+.cell { background-color: var(--sq); }
+.cell:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; z-index: 1; }
+
+/* Coordinates drawn outside the board edge. */
+.cell[data-file]:not([data-file=""])::after,
+.cell[data-rank]:not([data-rank=""])::before {
+  position: absolute;
+  font-size: clamp(9px, 1.6vmin, 13px);
+  color: var(--muted);
+  pointer-events: none;
+}
+.cell[data-file]:not([data-file=""])::after {
+  content: attr(data-file);
+  left: 0; right: 0; bottom: -17px;
+  text-align: center;
+}
+.cell[data-rank]:not([data-rank=""])::before {
+  content: attr(data-rank);
+  left: -18px; top: 0; bottom: 0;
+  width: 16px;
+  display: flex; align-items: center; justify-content: flex-end;
+}
+
+/* Last move. */
+.cell.last-from, .cell.last-to { background-color: color-mix(in srgb, var(--sq) 50%, #f2c230); }
+.cell.last-arrow { outline: 3px solid var(--last); outline-offset: -3px; }
+
+/* Pieces are drawn as a radial background on the cell, so the pseudo-elements
+   stay free for coordinate labels. */
+.cell.white, .cell.black { cursor: pointer; }
+.cell.white, .cell.black {
+  background-image: radial-gradient(circle at 50% 50%, var(--piece) 0 36%, var(--ring) 37% 41%, transparent 42%);
+}
+.cell.white { --piece: var(--piece-white); --ring: #3a3a3a; }
+.cell.black { --piece: var(--piece-black); --ring: #e9e2d0; }
+
+.cell.arrow {
+  background-color: var(--arrow-tile);
+  box-shadow: inset 0 0 0 2px var(--sq);
+  background-image:
+    linear-gradient(45deg, transparent 43%, #cdbd9c 43% 57%, transparent 57%),
+    linear-gradient(-45deg, transparent 43%, #cdbd9c 43% 57%, transparent 57%);
+  background-size: 44% 44%;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.cell.movable { cursor: pointer; }
+.cell.selected { box-shadow: inset 0 0 0 4px var(--accent); }
+.cell.vacated { background-image: radial-gradient(circle, rgba(0,0,0,0.12) 0 30%, transparent 31%); }
+
+/* Legal targets: dot for empty squares. */
+.cell.target { cursor: pointer; }
+.cell.target:not(.white):not(.black):not(.vacated) {
+  background-image: radial-gradient(circle, var(--dot) 0 17%, transparent 18%);
+}
+.cell.target.vacated {
+  background-image: radial-gradient(circle, var(--dot) 0 17%, transparent 18%);
+}
+.cell.t-move { --dot: var(--move-dot); }
+.cell.t-arrow { --dot: var(--arrow-dot); }
+
+/* Panel. */
+.panel {
+  width: min(96vw, 64dvh, 560px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+h1 { font-size: 1.25rem; margin: 0; }
+h1 .sub { font-weight: 400; color: var(--muted); font-size: 0.9rem; }
+
+.status { margin: 0; font-weight: 600; min-height: 1.4em; }
+.hint { margin: 0; color: var(--muted); min-height: 1.3em; font-size: 0.95rem; }
+
+.controls { display: flex; gap: 10px; flex-wrap: wrap; }
+.controls label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); flex: 1 1 140px; }
+
+select, button {
+  font: inherit;
+  font-size: 1rem;
+  min-height: 44px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  padding: 0 12px;
+  touch-action: manipulation;
+}
+button { cursor: pointer; font-weight: 600; }
+button:disabled { opacity: 0.45; cursor: default; }
+#newGame { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.buttons { display: flex; gap: 8px; }
+.buttons button { flex: 1; }
+
+.moves-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 30dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.moves { width: 100%; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92rem; }
+.moves th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-family: system-ui, sans-serif; font-size: 0.8rem; color: var(--muted); }
+.moves td { padding: 4px 8px; }
+.moves th:first-child, .moves td:first-child { color: var(--muted); width: 3em; }
+.moves td.cur { background: var(--cur); border-radius: 4px; }
+
+/* Landscape / wide screens (tablets held sideways, desktops): side by side. */
+@media (min-aspect-ratio: 5/4) and (min-width: 700px) {
+  .layout {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 24px;
+    padding-top: 16px;
+  }
+  .board-wrap { width: min(62vw, calc(100dvh - 48px)); }
+  .panel { width: min(34vw, 380px); }
+  .moves-wrap { max-height: calc(100dvh - 330px); min-height: 120px; }
+}
