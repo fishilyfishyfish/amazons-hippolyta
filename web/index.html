@@ -16,10 +16,16 @@
     <h1>Amazons <span class="sub">Hippolyta</span></h1>
     <p id="status" class="status" aria-live="polite">엔진 로딩 중…</p>
     <p id="hint" class="hint"></p>
+    <div class="evalbar" aria-hidden="true"><div id="evalFill" class="evalfill"></div></div>
+    <p id="evalText" class="evaltext"></p>
+    <p id="aiInfo" class="aiinfo"></p>
     <div class="controls">
       <label>상대
         <select id="opponent">
-          <option value="random">랜덤 AI</option>
+          <option value="mcts:2000">MCTS 2초</option>
+          <option value="mcts:500">MCTS 0.5초</option>
+          <option value="greedy">탐욕 (1수 평가)</option>
+          <option value="random">랜덤</option>
           <option value="human">사람 (같은 기기)</option>
         </select>
       </label>
@@ -29,6 +35,9 @@
           <option value="1">흑 (후)</option>
         </select>
       </label>
+    </div>
+    <div class="toggles">
+      <label><input type="checkbox" id="heat"> 영역 히트맵 <span class="legend"><i class="lw"></i>백 <i class="lb"></i>흑 <i class="lt"></i>동거리</span></label>
     </div>
     <div class="buttons">
       <button id="newGame" type="button">새 게임</button>

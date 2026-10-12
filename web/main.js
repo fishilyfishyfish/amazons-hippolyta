@@ -2,7 +2,8 @@
 
 const FILES = 'abcdefghij';
 const sqName = (sq) => FILES[sq % 10] + (Math.floor(sq / 10) + 1);
-const AI_DELAY_MS = 350;
+const AI_DELAY_MS = 350; // pause before instant (random/greedy) replies
+const VALUE_SCALE = 8;    // same squash as the engine: tanh(score / 8)
 
 const els = {
   board: document.getElementById('board'),
@@ -14,6 +15,10 @@ const els = {
   newGame: document.getElementById('newGame'),
   undo: document.getElementById('undo'),
   cancel: document.getElementById('cancel'),
+  heat: document.getElementById('heat'),
+  evalFill: document.getElementById('evalFill'),
+  evalText: document.getElementById('evalText'),
+  aiInfo: document.getElementById('aiInfo'),
 };
 
 // ---- worker RPC -----------------------------------------------------------
@@ -22,7 +27,11 @@ const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'modu
 let nextId = 1;
 const pending = new Map();
 worker.onmessage = (e) => {
-  const { id, error } = e.data;
+  const { id, error, progress } = e.data;
+  if (progress) {
+    showAiInfo(progress, true);
+    return;
+  }
   const p = pending.get(id);
   if (!p) return;
   pending.delete(id);
@@ -46,7 +55,8 @@ let tree = new Map();    // from -> Map(to -> Set(arrow))
 let sel = { from: -1, to: -1 };
 let busy = false;        // waiting on the worker
 let epoch = 0;           // bumps on new game / undo to drop stale AI turns
-const settings = { opponent: 'random', human: 0 };
+const settings = { opponent: 'mcts:2000', human: 0 };
+let lastAiInfo = null;
 
 function setState(s) {
   state = s;
@@ -83,12 +93,32 @@ async function run(type, args) {
 async function maybeAiTurn() {
   if (!state || state.over || isHumanTurn()) return;
   const my = epoch;
+  const [kind, ms] = settings.opponent.split(':');
   busy = true;
   render();
-  await new Promise((r) => setTimeout(r, AI_DELAY_MS));
+  if (kind !== 'mcts') {
+    await new Promise((r) => setTimeout(r, AI_DELAY_MS));
+    if (my !== epoch) return;
+  }
+  const res = await run('aiMove', { kind, ms: Number(ms) || 0 });
   if (my !== epoch) return;
-  await run('randomMove');
-  if (my === epoch) maybeAiTurn();
+  lastAiInfo = res && res.info ? res.info : null;
+  showAiInfo(lastAiInfo, false);
+  maybeAiTurn();
+}
+
+const pct = (v) => Math.round(50 * (v + 1)) + '%';
+
+function showAiInfo(info, live) {
+  if (!info) {
+    els.aiInfo.textContent = '';
+    return;
+  }
+  const head = live ? 'MCTS 탐색 중' : 'MCTS';
+  const time = info.ms != null ? ` (${(info.ms / 1000).toFixed(1)}초)` : '';
+  const pv = info.pv.length ? ` · 예상 수순: ${info.pv.slice(0, 4).join(' ')}` : '';
+  els.aiInfo.textContent =
+    `${head} ${info.iterations.toLocaleString()}회${time} · 백 승률 추정 ${pct(info.value)}${pv}`;
 }
 
 // ---- board DOM ------------------------------------------------------------
@@ -135,6 +165,7 @@ function render() {
   }
   const human = isHumanTurn() && !busy;
   const flip = settings.opponent !== 'human' && settings.human === 1;
+  const heatOn = els.heat.checked;
 
   for (let i = 0; i < 100; i++) {
     const sq = squareAt(i);
@@ -143,6 +174,13 @@ function render() {
     const r = Math.floor(sq / 10), c = sq % 10;
     const cls = ['cell', (r + c) % 2 === 0 ? 'dark' : 'light'];
     const v = cells[sq];
+    if (heatOn && v === 0 && sq !== sel.from && sq !== sel.to) {
+      const h = heatFor(sq);
+      if (h) {
+        cls.push('heat', h.cls);
+        el.style.setProperty('--heat-a', h.amt);
+      }
+    }
     if (v === 1) cls.push('white');
     else if (v === 2) cls.push('black');
     else if (v === 3) cls.push('arrow');
@@ -165,9 +203,33 @@ function render() {
   }
   els.board.classList.toggle('flipped', flip);
   renderStatus();
+  renderEval();
   renderMoves();
   els.undo.disabled = busy || undoCount() === 0;
   els.cancel.disabled = sel.from < 0;
+}
+
+// Territory by queen distance: who reaches the empty square first, and how
+// clearly (distance gap).
+function heatFor(sq) {
+  const dw = state.dist[sq], db = state.dist[100 + sq];
+  if (dw === 255 && db === 255) return null;
+  if (dw === db) return { cls: 'h-tie', amt: '30%' };
+  const gap = Math.abs(dw - db);
+  const amt = dw === 255 || db === 255 || gap >= 3 ? '85%' : gap === 2 ? '62%' : '42%';
+  return { cls: dw < db ? 'h-white' : 'h-black', amt };
+}
+
+function renderEval() {
+  const e = state.evaluation;
+  let v;
+  if (state.over) v = state.winner === 0 ? 1 : -1;
+  else v = Math.tanh(e.score / VALUE_SCALE);
+  els.evalFill.style.width = pct(v);
+  const sign = (x) => (x >= 0 ? '+' : '') + x.toFixed(1);
+  els.evalText.textContent = state.over
+    ? ''
+    : `정적 평가 (백 기준) ${sign(e.score)} · 영역 ${sign(e.t1)} · 국면 ${e.phase >= 0.99 ? '초반' : e.phase > 0.3 ? '중반' : '종반'}`;
 }
 
 function labelFor(v) {
@@ -188,7 +250,8 @@ function renderStatus() {
       : sel.from >= 0 ? '이동할 칸을 고르세요.'
       : '움직일 아마존을 고르세요.';
   } else {
-    text = `${colorName(s.side)} (랜덤 AI) 두는 중…`;
+    const name = els.opponent.selectedOptions[0].textContent;
+    text = `${colorName(s.side)} (${name}) 생각 중…`;
   }
   els.status.textContent = text;
   els.hint.textContent = hint;
@@ -261,6 +324,12 @@ els.undo.addEventListener('click', async () => {
   await run('undo', { count });
 });
 
+els.heat.addEventListener('change', () => {
+  try { localStorage.setItem('heat', els.heat.checked ? '1' : ''); } catch {}
+  render();
+});
+try { els.heat.checked = localStorage.getItem('heat') === '1'; } catch {}
+
 els.cancel.addEventListener('click', () => {
   sel = { from: -1, to: -1 };
   render();
@@ -269,6 +338,8 @@ els.cancel.addEventListener('click', () => {
 async function newGame() {
   settings.opponent = els.opponent.value;
   settings.human = Number(els.color.value);
+  lastAiInfo = null;
+  showAiInfo(null);
   els.color.disabled = settings.opponent === 'human';
   epoch++;
   await run('newGame');

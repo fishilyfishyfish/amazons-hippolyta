@@ -207,3 +207,32 @@ button:disabled { opacity: 0.45; cursor: default; }
   .panel { width: min(34vw, 380px); }
   .moves-wrap { max-height: calc(100dvh - 330px); min-height: 120px; }
 }
+
+/* Territory heatmap (queen distance). Mixed into the square color so move
+   dots (background-image) stay on top. */
+:root { --heat-w: #1a86d9; --heat-b: #e8590c; --heat-t: #f5f5f0; }
+.cell.heat { background-color: color-mix(in srgb, var(--heat-c) var(--heat-a), var(--sq)); }
+.cell.h-white { --heat-c: var(--heat-w); }
+.cell.h-black { --heat-c: var(--heat-b); }
+.cell.h-tie { --heat-c: var(--heat-t); }
+
+.toggles { font-size: 0.95rem; }
+.toggles label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 36px; }
+.toggles input { width: 22px; height: 22px; accent-color: var(--accent); }
+.legend { color: var(--muted); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-left: 6px; border: 1px solid var(--border); }
+.legend .lw { background: var(--heat-w); }
+.legend .lb { background: var(--heat-b); }
+.legend .lt { background: var(--heat-t); }
+
+/* Evaluation bar: white share from the left. */
+.evalbar {
+  height: 12px;
+  border-radius: 6px;
+  background: #2b2b2b;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.evalfill { height: 100%; width: 50%; background: #f4f1e8; transition: width 0.3s ease; }
+.evaltext, .aiinfo { margin: 0; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.aiinfo { min-height: 1.2em; overflow-wrap: anywhere; }

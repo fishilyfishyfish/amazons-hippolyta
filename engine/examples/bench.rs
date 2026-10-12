@@ -5,8 +5,10 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use amazons_engine::board::{Board, Move};
+use amazons_engine::eval::{evaluate, EvalWeights};
 use amazons_engine::naive::NaiveBoard;
 use amazons_engine::rng::Rng;
+use amazons_engine::search::{Mcts, MctsConfig};
 
 fn rate(n: u64, secs: f64) -> String {
     format!("{:.1} M/s", n as f64 / secs / 1e6)
@@ -85,7 +87,37 @@ fn main() {
     );
     assert_eq!(n, n2);
 
-    // 4. Perft 3 (bulk counted), optional.
+    // 4. Static evaluation.
+    let w = EvalWeights::default();
+    let t = Instant::now();
+    let mut acc = 0.0f32;
+    for _ in 0..20 {
+        for p in &pos {
+            acc += evaluate(black_box(p), &w);
+        }
+    }
+    let s = t.elapsed().as_secs_f64();
+    black_box(acc);
+    println!(
+        "evaluate (random-game positions): {:.2} us/call",
+        s / (20 * pos.len()) as f64 * 1e6
+    );
+
+    // 5. MCTS iterations at the start and in a midgame position.
+    for (label, b) in [("start", Board::new()), ("ply 20", pos[20])] {
+        let mut m = Mcts::new(b, MctsConfig::default());
+        let t = Instant::now();
+        m.run(2000);
+        let s = t.elapsed().as_secs_f64();
+        println!(
+            "mcts {label}: 2000 iterations in {:.2}s ({:.0} it/s, {} nodes)",
+            s,
+            2000.0 / s,
+            m.node_count()
+        );
+    }
+
+    // 6. Perft 3 (bulk counted), optional.
     if depth3 {
         let t = Instant::now();
         let n = Board::new().perft(3);

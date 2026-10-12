@@ -15,9 +15,14 @@
   - `src/board.rs`: 비트보드, 합법수 생성, 수 적용/되돌리기, 종국 판정, 기보 표기, perft
   - `src/naive.rs`: 교차검증용 단순 배열 구현 (비트보드 코드와 공유하는 것은 `Move` 타입뿐)
   - `src/rng.rs`: SplitMix64 (랜덤 AI, 테스트용)
+  - `src/eval.rs`: 정적 평가 (퀸/킹 거리 영역, Lieberum식 항), 거리 맵
+  - `src/search.rs`: MCTS(PUCT) + 1수 탐욕
+  - `src/players.rs`: 플레이어 스펙 파서 (`random`, `greedy`, `mcts:N`, `mcts-ms:T`, `,key=value` 옵션)
   - `src/wasm.rs`: JS 바인딩 (`Game` 클래스)
   - `tests/movegen.rs`: 규칙/수 생성 테스트, perft 교차검증
-  - `examples/bench.rs`: 수 생성 벤치마크
+  - `tests/eval_search.rs`: 거리 BFS 교차검증, 평가 대칭성, 탐색 테스트, 분석 API
+  - `examples/bench.rs`: 수 생성/평가/MCTS 벤치마크
+  - `examples/arena.rs`: 자동 대국 (강도 측정)
 - `web/`: 바닐라 HTML/CSS/JS. 엔진은 Web Worker(`worker.js`)에서만 호출해서 UI가 멈추지 않게.
   - `main.js`: 렌더링과 입력만. 규칙 판단은 워커가 준 합법수 목록으로만 한다.
   - `web/pkg/`: 빌드 산출물(커밋 안 함).
@@ -32,8 +37,8 @@
 
 1. 규칙, 합법수 생성, 테스트 — **완료**
 2. 최소 웹 UI(사람 vs 랜덤 AI), Pages 배포 — **완료** (Pages 활성화는 수동 필요, 아래 참고)
-3. 영역 평가(퀸 거리)와 히트맵
-4. MCTS 엔진, 버전 간 자동 대국으로 강도 측정
+3. 영역 평가(퀸 거리)와 히트맵 — **완료**
+4. MCTS 엔진, 버전 간 자동 대국으로 강도 측정 — **완료** (파라미터 튜닝 진행 중)
 5. 분석 기능: 평가 그래프, 수순 트리, 추천 수, 기보 입출력
 6. 알파제로식 신경망 평가
 
@@ -49,6 +54,8 @@
 cd engine && cargo test                          # 빠른 테스트 (~2초)
 cd engine && cargo test --release -- --ignored   # perft(3) 교차검증 (~2분)
 cd engine && cargo run --release --example bench [-- depth3]
+cd engine && cargo run --release --example arena -- <A> <B> [쌍 수=20] [오프닝 랜덤 수=2] [시드=1]
+#   예: arena -- mcts-ms:200 mcts-ms:200,half_k=0 20
 ./scripts/build-wasm.sh                          # rustup target add wasm32-unknown-unknown,
                                                  # cargo install wasm-bindgen-cli --version 0.2.129
 cd web && python3 -m http.server                 # 로컬 확인 (module worker라 file:// 불가)
@@ -86,6 +93,32 @@ cd web && python3 -m http.server                 # 로컬 확인 (module worker�
 - **반응형**: 세로 화면은 판 위/패널 아래, 가로(가로세로비 ≥ 5/4, 폭 ≥ 700px)는 좌우 배치.
   칸은 `<button>`이라 터치/키보드 모두 동작, 버튼 최소 높이 44px, `touch-action: manipulation`.
 
+- **평가 함수** (`eval.rs`, 둘 차례 기준 점수, 단위는 대략 "칸"):
+  - 퀸 거리 BFS는 집합 단위 Kogge-Stone 플러드(8방향 occluded fill)로 레벨별 비트보드를 만든다.
+    칸마다 `queen_reach`를 도는 방식보다 4배 빠름(4.3µs → 1.07µs/평가). 킹 거리는 시프트 팽창.
+  - 항: t1(퀸 거리 영역, 동거리 칸은 둘 차례에 `tie`=0.2), t2(킹 거리 영역), c1=2Σ(2^-Dp − 2^-Do),
+    c2=Σclamp((Ko−Kp)/6, −1, 1), 기동력(아마존별 −8/(1+이동 가능 칸)), w=Σ2^-|Dp−Do|.
+  - 국면 `phase = clamp(w/40, 0, 1)`: 초반엔 t1 비중을 0.5로 낮추고 t2/c1/c2/기동력을 섞고,
+    종반(영역이 갈라지면 w→0)엔 t1만 남는다.
+  - UI 표시용 평가(`Game::evaluation`)는 `tie=0`으로 계산한다. 차례 보너스를 넣으면 매 수마다
+    수 점씩 출렁여서(시작 위치 +5.8) 형세 표시로는 오해를 부른다. 탐색은 기본값(0.2)을 쓴다.
+- **MCTS** (`search.rs`):
+  - PUCT 선택. 노드를 처음 방문하면 확장: 후보 수를 정적 평가해서 상위 `top_k`(40)만 간선으로
+    남기고, softmax(score/2)를 prior로, `tanh(최고 점수/8)`을 노드 값으로 쓴다(1수 미니맥스 값).
+    랜덤 플레이아웃 없음 — 아마존은 랜덤 플레이아웃이 평가로서 매우 약하다.
+  - 신경망(6단계)이 들어오면 prior/value만 바꾸면 되도록 PUCT 구조로 했다.
+  - 2단계 후보 생성(`half_k`=16): 아마존 이동(from,to)만 먼저 평가하고 상위 16개 이동에 대해서만
+    화살까지 평가. 시작 위치 기준 확장 비용이 ~2176 → ~400 평가로 줄어든다.
+    단, "화살 한 발로 상대를 완전히 가둘 수 있는 이동"은 항상 남긴다(가지치기로 즉승을 놓치던 버그).
+  - 미방문 간선 값(FPU) = 부모 값 − 0.2. 최종 수는 방문 수 최다(동률이면 prior).
+  - 즉승 수(상대가 둘 곳 없음)는 점수 1000, 수가 없는 노드는 값 −1.
+- **자동 대국** (`arena`): 오프닝 랜덤 2수를 같게 두고 색을 바꿔 2판씩(쌍). 4스레드 병렬.
+  승률 ± 95% 신뢰구간과 Elo 차이를 출력. 시간 제한 대국은 다른 작업과 CPU를 나눠 쓰면 오차가 커진다.
+- **웹 AI**: 워커 안에서 `search_run(32)`을 반복하며 시간(0.5초/2초)이 지나면 멈춘다(js-sys 의존 없음).
+  탐색 중 250ms마다 진행 상황(반복 수, 승률 추정, 예상 수순)을 메인 스레드로 보낸다.
+- **히트맵**: 빈 칸마다 퀸 거리가 더 가까운 쪽 색(백=파랑, 흑=주황), 거리 차 1/2/3+ 또는 한쪽만
+  도달이면 진하게. 동거리는 흐린 회백색. 칸 배경색에 `color-mix`로 섞어서 합법수 점이 위에 보이게.
+
 ## 성능 기록
 
 ### 수 생성 (2026-10-12, 1단계)
@@ -102,11 +135,27 @@ cd web && python3 -m http.server                 # 로컬 확인 (module worker�
 
 검증된 perft 값 (비트보드와 단순 배열 구현 일치): perft(1)=2,176, perft(2)=4,307,152, perft(3)=8,350,439,170.
 
-WASM 쪽 속도는 아직 측정 안 함 (4단계 MCTS 전에 측정할 것).
+### 평가/탐색 속도 (2026-10-12, 3–4단계)
+
+같은 환경(네이티브 release, 1스레드).
+
+| 항목 | 결과 |
+|---|---|
+| `evaluate` (무작위 대국 위치 평균) | 1.07 µs/호출 (칸별 `queen_reach` BFS일 때 4.29 µs) |
+| MCTS 시작 위치, `half_k=16` | 약 3,500 반복/s |
+| MCTS 20수째 위치, `half_k=16` | 약 6,000 반복/s |
+| MCTS 시작 위치, `half_k=0` (전수 평가) | 약 1,070 반복/s |
+| WASM MCTS (Chromium headless, 시작 직후 흑) | 0.5초에 1,600–2,000 반복 (다른 작업과 CPU 공유 중 측정) |
 
 ### 대국 승률
 
-(4단계부터 기록)
+`arena`, 오프닝 랜덤 2수, 쌍마다 색 교대. 괄호는 95% 신뢰구간.
+
+| A | B | 판수 | A 승률 | 비고 |
+|---|---|---|---|---|
+| greedy | random | 40 | 100% | |
+| mcts:1000 | greedy | 40 | 100% | 평균 71.5수 |
+| mcts-ms:200 | mcts-ms:200,half_k=0 | 40 | 50% (±15.5) | 2단계 후보 생성 효과 없음/측정 불가 수준 |
 
 ## 배포
 

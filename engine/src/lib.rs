@@ -1,8 +1,11 @@
 //! Game of the Amazons engine.
 
 pub mod board;
+pub mod eval;
 pub mod naive;
+pub mod players;
 pub mod rng;
+pub mod search;
 pub mod wasm;
 
 pub use board::{Board, Color, Move};

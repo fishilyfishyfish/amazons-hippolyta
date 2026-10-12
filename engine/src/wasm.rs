@@ -4,13 +4,16 @@
 use wasm_bindgen::prelude::*;
 
 use crate::board::{Bits, Board, Color, Move};
+use crate::eval::{evaluate_terms, queen_distance_map, EvalWeights};
 use crate::rng::Rng;
+use crate::search::{greedy_move, Mcts, MctsConfig};
 
 #[wasm_bindgen]
 pub struct Game {
     board: Board,
     history: Vec<Move>,
     rng: Rng,
+    search: Option<Mcts>,
 }
 
 fn bits_to_vec(b: u128) -> Vec<u8> {
@@ -25,12 +28,14 @@ impl Game {
             board: Board::new(),
             history: Vec::new(),
             rng: Rng::new(seed as u64),
+            search: None,
         }
     }
 
     pub fn reset(&mut self) {
         self.board = Board::new();
         self.history.clear();
+        self.search = None;
     }
 
     /// 100 cells, index = row*10+col: 0 empty, 1 white, 2 black, 3 arrow.
@@ -140,5 +145,110 @@ impl Game {
             .map(|m| m.to_string())
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Static evaluation from White's point of view, for display. The
+    /// side-to-move tie bonus is left out so the number does not swing by
+    /// the tempo every ply. JSON:
+    /// `{"score":..,"t1":..,"t2":..,"c1":..,"c2":..,"w":..,"mobility":..,"phase":..}`.
+    pub fn evaluation(&self) -> String {
+        let weights = EvalWeights {
+            tie: 0.0,
+            ..EvalWeights::default()
+        };
+        let t = evaluate_terms(&self.board, &weights);
+        let s = if self.board.side == Color::White {
+            1.0
+        } else {
+            -1.0
+        };
+        format!(
+            "{{\"score\":{},\"t1\":{},\"t2\":{},\"c1\":{},\"c2\":{},\"w\":{},\"mobility\":{},\"phase\":{}}}",
+            s * t.score,
+            s * t.t1,
+            s * t.t2,
+            s * t.c1,
+            s * t.c2,
+            t.w,
+            s * t.mobility,
+            t.phase
+        )
+    }
+
+    /// Queen distances: 100 values for White then 100 for Black (255 =
+    /// unreachable or occupied).
+    pub fn queen_distances(&self) -> Vec<u8> {
+        let [w, b] = queen_distance_map(&self.board);
+        w.iter().chain(b.iter()).copied().collect()
+    }
+
+    /// `[from, to, arrow]` of the best one-ply move by static evaluation.
+    pub fn greedy_move(&self) -> Vec<u8> {
+        match greedy_move(&self.board, &EvalWeights::default()) {
+            Some(m) => vec![m.from, m.to, m.arrow],
+            None => Vec::new(),
+        }
+    }
+
+    /// Starts a fresh MCTS on the current position (default config).
+    pub fn search_start(&mut self) {
+        self.search = Some(Mcts::new(self.board, MctsConfig::default()));
+    }
+
+    /// Runs `n` more iterations; returns the total so far.
+    pub fn search_run(&mut self, n: u32) -> u32 {
+        match &mut self.search {
+            Some(t) if *t.root() == self.board => {
+                t.run(n);
+                t.iterations()
+            }
+            _ => 0,
+        }
+    }
+
+    /// `[from, to, arrow]` of the most visited root move, or empty.
+    pub fn search_best(&self) -> Vec<u8> {
+        match self.search.as_ref().and_then(|t| t.best_move()) {
+            Some(m) => vec![m.from, m.to, m.arrow],
+            None => Vec::new(),
+        }
+    }
+
+    /// Search summary as JSON. `value` and each candidate's `q` are in
+    /// [-1, 1] from White's point of view.
+    pub fn search_info(&self, max_candidates: usize) -> String {
+        let Some(t) = &self.search else {
+            return "null".into();
+        };
+        let s = if t.root().side == Color::White {
+            1.0
+        } else {
+            -1.0
+        };
+        let pv: Vec<String> = t.pv(8).iter().map(|m| format!("\"{m}\"")).collect();
+        let cands: Vec<String> = t
+            .candidates()
+            .iter()
+            .take(max_candidates)
+            .map(|c| {
+                let q = if c.q.is_nan() {
+                    "null".to_string()
+                } else {
+                    (s * c.q).to_string()
+                };
+                format!(
+                    "{{\"move\":\"{}\",\"sq\":[{},{},{}],\"visits\":{},\"q\":{},\"prior\":{}}}",
+                    c.mv, c.mv.from, c.mv.to, c.mv.arrow, c.visits, q, c.prior
+                )
+            })
+            .collect();
+        format!(
+            "{{\"iterations\":{},\"nodes\":{},\"value\":{},\"pv\":[{}],\"candidates\":[{}]}}",
+            t.iterations(),
+            t.node_count(),
+            s * t.root_value(),
+            pv.join(","),
+            cands.join(",")
+        )
     }
 }
