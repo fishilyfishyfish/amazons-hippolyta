@@ -12,6 +12,7 @@
 
 use crate::board::{bit, neighbors, queen_reach, Bits, Board, Move, BOARD_MASK};
 use crate::eval::{evaluate, regions_separated, EvalWeights};
+use crate::nn::{move_logit, Net};
 use crate::rng::Rng;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,6 +41,16 @@ pub struct MctsConfig {
     pub jitter: f32,
     pub seed: u64,
     pub weights: EvalWeights,
+    /// Neural network (`nn::register_net` id, 0 = none). With a network,
+    /// move ordering/priors come from its policy and node values from its
+    /// value head instead of the static evaluation.
+    pub net: u8,
+    /// Softmax temperature applied to the network's move logits.
+    pub net_temp: f32,
+    /// Node value with a network: 0 = the network's value head, 1 = static
+    /// evaluation of the node, 2 = best static evaluation over the kept
+    /// (network-ordered) moves, i.e. the usual 1-ply value on fewer moves.
+    pub net_value: u8,
 }
 
 impl Default for MctsConfig {
@@ -55,6 +66,9 @@ impl Default for MctsConfig {
             jitter: 0.0,
             seed: 0,
             weights: EvalWeights::default(),
+            net: 0,
+            net_temp: 1.0,
+            net_value: 0,
         }
     }
 }
@@ -107,6 +121,7 @@ pub struct Mcts {
     path: Vec<u32>,
     node_path: Vec<u32>,
     rng: Rng,
+    net: Option<std::sync::Arc<Net>>,
 }
 
 impl Mcts {
@@ -121,6 +136,7 @@ impl Mcts {
             path: Vec::with_capacity(64),
             node_path: Vec::with_capacity(64),
             rng: Rng::new(config.seed),
+            net: crate::nn::get_net(config.net),
         };
         m.reset(root);
         m
@@ -149,7 +165,19 @@ impl Mcts {
     /// move.
     fn expand(&mut self, node: usize, board: &mut Board) -> f32 {
         let cfg = self.config;
-        let mut complete = score_moves(board, &cfg, &mut self.scratch, &mut self.scored);
+        let mut nn_value = None;
+        let mut complete = match &self.net {
+            Some(net) => {
+                nn_value = Some(score_moves_nn(
+                    board,
+                    net,
+                    &mut self.scratch,
+                    &mut self.scored,
+                ));
+                true
+            }
+            None => score_moves(board, &cfg, &mut self.scratch, &mut self.scored),
+        };
         self.nodes[node].expanded = true;
         if self.scored.is_empty() {
             self.nodes[node].value = -1.0;
@@ -173,10 +201,15 @@ impl Mcts {
         }
         self.scored.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         let best = self.scored[0].0;
+        let temp = if nn_value.is_some() {
+            cfg.net_temp
+        } else {
+            cfg.prior_temp
+        };
         let mut total = 0.0;
         for e in self.scored.iter_mut() {
             // Reuse the score slot for the unnormalised prior.
-            e.0 = ((e.0 - best) / cfg.prior_temp).exp();
+            e.0 = ((e.0 - best) / temp).exp();
             total += e.0;
         }
         let first = self.edges.len() as u32;
@@ -191,6 +224,37 @@ impl Mcts {
         }
         let value = if best >= WIN_SCORE {
             1.0
+        } else if let Some(v) = nn_value {
+            let static_best = (cfg.net_value == 2).then(|| {
+                self.edges[first as usize..]
+                    .iter()
+                    .map(|e| score_after(board, e.mv, &cfg.weights))
+                    .fold(f32::NEG_INFINITY, f32::max)
+            });
+            if let Some(sb) = static_best {
+                if sb >= WIN_SCORE {
+                    1.0
+                } else if cfg.endgame_scale > 0.0 && regions_separated(board) {
+                    ((sb + 0.5) / cfg.endgame_scale).tanh()
+                } else {
+                    (sb / cfg.value_scale).tanh()
+                }
+            } else if cfg.endgame_scale > 0.0 && regions_separated(board) {
+                // Sealed regions: count, don't guess. The side to move wins
+                // iff it has more squares (ties lose: it must move first).
+                let d = evaluate(
+                    board,
+                    &EvalWeights {
+                        tie: 0.0,
+                        ..cfg.weights
+                    },
+                );
+                ((d - 0.5) / cfg.endgame_scale).tanh()
+            } else if cfg.net_value == 1 {
+                (evaluate(board, &cfg.weights) / cfg.value_scale).tanh()
+            } else {
+                v
+            }
         } else if cfg.endgame_scale > 0.0 && regions_separated(board) {
             ((best + 0.5) / cfg.endgame_scale).tanh()
         } else {
@@ -457,6 +521,42 @@ pub fn merge_candidates(lists: &[Vec<Candidate>]) -> Vec<Candidate> {
     }
     out.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.prior.total_cmp(&a.prior)));
     out
+}
+
+/// Network move ordering: `out` gets `(logit, move)` for every legal move
+/// (immediate wins get `WIN_SCORE`); returns the network's value for the side
+/// to move.
+fn score_moves_nn(
+    board: &mut Board,
+    net: &Net,
+    scratch: &mut Vec<Move>,
+    out: &mut Vec<(f32, Move)>,
+) -> f32 {
+    out.clear();
+    scratch.clear();
+    board.generate_moves(scratch);
+    if scratch.is_empty() {
+        return -1.0;
+    }
+    let o = net.eval(board);
+    // One move can take at most two of the opponent's free neighbour squares
+    // (destination and arrow), so wins are only possible with <= 2 left.
+    let me = board.side.index();
+    let opp_libs =
+        Bits(board.amazons[1 - me]).fold(0u128, |acc, s| acc | neighbors(s)) & board.empty();
+    let check_wins = opp_libs.count_ones() <= 2;
+    for &m in scratch.iter() {
+        let mut s = move_logit(&o, board, m);
+        if check_wins {
+            board.make_move(m);
+            if !board.has_moves() {
+                s = WIN_SCORE;
+            }
+            board.unmake_move(m);
+        }
+        out.push((s, m));
+    }
+    o.value
 }
 
 /// Score of `m` for the player making it.

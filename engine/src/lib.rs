@@ -4,6 +4,7 @@ pub mod board;
 pub mod eval;
 pub mod explain;
 pub mod naive;
+pub mod nn;
 pub mod players;
 pub mod rng;
 pub mod search;
