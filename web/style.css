@@ -51,8 +51,50 @@ html, body {
 /* Board fills the smaller viewport dimension, leaving room for the panel. */
 .board-wrap {
   width: min(96vw, 64dvh);
-  padding: 0 0 18px 18px; /* room for coordinates */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
+/* Evaluation bar | gap for rank labels | board (+ drawing overlay). */
+.board-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  column-gap: 20px;
+  padding-bottom: 18px; /* file labels */
+}
+.board-area { position: relative; }
+.board-area.viewing .board { outline: 3px dashed var(--hint); outline-offset: 3px; }
+.board-area.drawing .board { cursor: crosshair; touch-action: none; }
+.annot { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
+.annot .aline { stroke: rgba(232, 120, 20, 0.85); stroke-width: 2.1; stroke-linecap: round; }
+.annot .ahead { fill: rgba(232, 120, 20, 0.95); }
+.annot .acircle { fill: none; stroke: rgba(232, 120, 20, 0.9); stroke-width: 1.1; }
+
+/* chess.com-style evaluation bar: White's share from White's edge. */
+.vbar {
+  position: relative;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #2b2b2b;
+  border: 1px solid #4a3f2e;
+}
+.vfill { position: absolute; left: 0; right: 0; bottom: 0; height: 50%; background: #ffffff; transition: height 0.4s ease; }
+.vbar.flip .vfill { bottom: auto; top: 0; }
+.vlabel {
+  position: absolute; left: 0; right: 0;
+  font-size: 9px; font-weight: 700; text-align: center;
+  font-variant-numeric: tabular-nums; z-index: 1;
+}
+.vlabel.w { bottom: 3px; color: #2b2b2b; }
+.vlabel.b { top: 3px; color: #f4f1e8; }
+.vbar.flip .vlabel.w { bottom: auto; top: 3px; }
+.vbar.flip .vlabel.b { top: auto; bottom: 3px; }
+
+.board-tools { display: flex; gap: 6px; padding-left: 34px; }
+.board-tools button { flex: 1; min-width: 0; min-height: 40px; font-size: 0.95rem; padding: 0 4px; white-space: nowrap; }
+#drawBtn.on { background: rgba(232, 120, 20, 0.9); color: #fff; border-color: rgba(232, 120, 20, 0.9); }
+.viewinfo { margin: 0; padding-left: 34px; font-size: 0.82rem; color: var(--muted); min-height: 1.2em; }
+.viewinfo:empty { display: none; }
 
 .board {
   display: grid;
@@ -203,7 +245,7 @@ button:disabled { opacity: 0.45; cursor: default; }
     gap: 24px;
     padding-top: 16px;
   }
-  .board-wrap { width: min(62vw, calc(100dvh - 48px)); }
+  .board-wrap { width: min(62vw, calc(100dvh - 90px)); }
   .panel { width: min(34vw, 380px); }
   .moves-wrap { max-height: calc(100dvh - 330px); min-height: 120px; }
 }
@@ -403,3 +445,61 @@ button:disabled { opacity: 0.45; cursor: default; }
 .bookmove .mirror { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }
 .bookmove .line { margin: 2px 0 6px; font-size: 0.82rem; color: var(--muted); font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
 .bookmove .play { min-height: 36px; font-size: 0.9rem; }
+
+/* ---- move evaluation card (layout of the Lines of Action site) ---- */
+.coach-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.coach-top .label { font-size: 0.8rem; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.coach-nav { display: flex; gap: 6px; }
+.coach-nav .sm { min-height: 34px; font-size: 0.85rem; padding: 0 10px; }
+.ev-card { display: flex; flex-direction: column; gap: 10px; padding: 10px 0; }
+.ev-card + .ev-card { border-top: 1px solid var(--border); }
+.ev-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ev-badge {
+  font-weight: 700; font-size: 0.88rem; padding: 2px 11px; border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--fg);
+}
+.ev-badge[data-k="best"] { background: color-mix(in srgb, var(--g-best) 20%, transparent); color: var(--g-best); }
+.ev-badge[data-k="good"] { background: color-mix(in srgb, var(--g-best) 11%, transparent); color: var(--g-best); }
+.ev-badge[data-k="inaccuracy"] { background: color-mix(in srgb, var(--g-mistake) 14%, transparent); color: var(--g-mistake); }
+.ev-badge[data-k="mistake"] { background: color-mix(in srgb, var(--g-mistake) 24%, transparent); color: var(--g-mistake); }
+.ev-badge[data-k="blunder"] { background: color-mix(in srgb, var(--g-blunder) 20%, transparent); color: var(--g-blunder); }
+.ev-move { display: inline-flex; align-items: center; gap: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9rem; flex-wrap: wrap; }
+.ev-move .chip { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.chip.w { background: #fbfaf6; box-shadow: 0 0 0 1px #3a3a3a; }
+.chip.b { background: #222; box-shadow: 0 0 0 1px #000; }
+.ev-who { font-family: system-ui, sans-serif; font-size: 0.75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
+.ev-head { margin: 0; font-weight: 600; }
+.ev-wait { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.92rem; }
+.ev-wait .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+@media (prefers-reduced-motion: no-preference) { .ev-wait .pulse { animation: evpulse 1s ease-in-out infinite; } }
+@keyframes evpulse { 50% { opacity: 0.25; } }
+.ev-odds-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 0.82rem; color: var(--muted); }
+.ev-odds-row b { font-weight: 600; font-size: 1.05rem; color: var(--fg); font-variant-numeric: tabular-nums; }
+.ev-delta { font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.ev-delta[data-k="inaccuracy"], .ev-delta[data-k="mistake"] { color: var(--g-mistake); }
+.ev-delta[data-k="blunder"] { color: var(--g-blunder); }
+.ev-track { position: relative; height: 6px; border-radius: 3px; background: #3a3a3a; margin-top: 8px; }
+.ev-now { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: #f1eee4; box-shadow: inset 0 0 0 1px var(--border); }
+.ev-tick { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--accent); border-radius: 1px; }
+.ev-why { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.ev-why li { position: relative; padding-left: 24px; font-size: 0.9rem; line-height: 1.55; }
+.ev-why li::before {
+  position: absolute; left: 0; top: 0.2em; width: 17px; height: 17px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; line-height: 1;
+}
+.ev-why li[data-t="plus"]::before { content: "+"; color: var(--g-best); background: color-mix(in srgb, var(--g-best) 16%, transparent); }
+.ev-why li[data-t="minus"]::before { content: "−"; color: var(--g-mistake); background: color-mix(in srgb, var(--g-mistake) 16%, transparent); }
+.ev-why li[data-t="dot"]::before { content: "·"; color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.ev-sub { border-top: 1px solid var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.ev-sub .label { font-size: 0.78rem; color: var(--muted); letter-spacing: 0.04em; }
+.ev-sub .label strong { font-family: ui-monospace, monospace; font-weight: 600; color: var(--fg); letter-spacing: 0; }
+.ev-card .note { margin: 0; font-size: 0.8rem; color: var(--muted); }
+.coach-sum .ev-badge { font-size: 0.8rem; }
+
+/* Move record: every move can be clicked to look at that position. */
+.moves td.mv { cursor: pointer; border-radius: 4px; }
+.moves td.mv:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.moves td.mv.shown { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.moves td.mv.ahead { opacity: 0.45; }
+.moves td.g-best .mark { color: var(--g-best); }
+.moves-cap { caption-side: top; text-align: left; font-size: 0.75rem; color: var(--muted); padding: 6px 8px 0; }

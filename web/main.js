@@ -18,8 +18,18 @@ const els = {
   undo: document.getElementById('undo'),
   cancel: document.getElementById('cancel'),
   heat: document.getElementById('heat'),
-  evalFill: document.getElementById('evalFill'),
-  evalText: document.getElementById('evalText'),
+  vfill: document.getElementById('vfill'),
+  vlabel: document.getElementById('vlabel'),
+  vbar: document.getElementById('vbar'),
+  boardArea: document.getElementById('boardArea'),
+  annot: document.getElementById('annot'),
+  viewPrev: document.getElementById('viewPrev'),
+  viewNext: document.getElementById('viewNext'),
+  viewInfo: document.getElementById('viewInfo'),
+  drawBtn: document.getElementById('drawBtn'),
+  clearDraw: document.getElementById('clearDraw'),
+  evPrev: document.getElementById('evPrev'),
+  evNext: document.getElementById('evNext'),
   aiInfo: document.getElementById('aiInfo'),
   analysisPanel: document.getElementById('analysisPanel'),
   prev: document.getElementById('prev'),
@@ -154,8 +164,21 @@ try {
 } catch {}
 let lastAiInfo = null;
 
+// Every position the worker reported, by history key, so earlier positions
+// can be shown again without asking the engine (← → in play/coach/book).
+const snapshots = new Map();
+// Ply being looked at (null = the live position). Viewing never changes
+// the game; any new move returns to the live position.
+let viewPly = null;
+
 function setState(s) {
-  if (!state || s.history.length !== state.history.length) bookSel = 0;
+  const moved = !state || s.history.length !== state.history.length || !sameHistory(s.history, state.history);
+  if (moved) {
+    bookSel = 0;
+    viewPly = null;
+    annotations = [];
+  }
+  snapshots.set(hkey(s.history), s);
   state = s;
   tree = new Map();
   const L = s.legal;
@@ -212,8 +235,8 @@ async function maybeAiTurn() {
   analysisCache.set(hkey(before), info);
   await run('play', { move: info.best.sq });
   if (my !== epoch) return;
-  if (coachOn()) coachAfterAi(before, info, info.best.sq, my);
   if (coachOn() && isHumanTurn()) coachPrepare();
+  if (coachOn()) coachAfterAi(before, info, info.best.sq, my);
   maybeAiTurn();
 }
 
@@ -286,15 +309,23 @@ function squareAt(i) {
   return row * 10 + col;
 }
 
+// The position on screen: the live one, or an earlier one while viewing.
+function shownState() {
+  if (viewPly === null || !state) return state;
+  return snapshots.get(hkey(state.history.slice(0, 3 * viewPly))) || state;
+}
+const viewing = () => viewPly !== null;
+
 function render() {
   if (!state) return;
-  const cells = Array.from(state.cells);
+  const st = shownState();
+  const cells = Array.from(st.cells);
   // Preview the amazon on its destination while choosing the arrow.
   if (sel.to >= 0) {
     cells[sel.to] = cells[sel.from];
     cells[sel.from] = 0;
   }
-  const H = state.history;
+  const H = st.history;
   const last = H.length >= 3 ? H.slice(H.length - 3) : null;
   let targets = null, targetClass = '';
   if (sel.to >= 0) {
@@ -304,12 +335,12 @@ function render() {
     targets = tree.get(sel.from);
     targetClass = 't-move';
   }
-  const human = isHumanTurn() && !busy;
+  const human = isHumanTurn() && !busy && !viewing();
   const flip = isFlipped();
-  const ex = isAnalysis() && sel.from < 0 ? currentExplanation() : null;
+  const ex = (isAnalysis() || viewing() || coachOn()) && sel.from < 0 ? shownExplanation() : null;
   const gained = new Set(ex ? ex.gained : []);
   const lost = new Set(ex ? ex.lost : []);
-  const hintMove = sel.from < 0
+  const hintMove = sel.from < 0 && !viewing()
     ? isBook() ? bookHintMove() : (isAnalysis() ? showBest : coachHint) ? currentBestMove() : null
     : null;
   const heatOn = els.heat.checked;
@@ -347,7 +378,7 @@ function render() {
       // The arrow may land on the vacated start square: show both numbers.
       const n = [];
       if (sq === hintMove[0]) { cls.push('hint-from'); n.push('1'); }
-      if (sq === hintMove[1]) { cls.push('hint-to', state.side === 0 ? 'ghost-w' : 'ghost-b'); n.push('2'); }
+      if (sq === hintMove[1]) { cls.push('hint-to', st.side === 0 ? 'ghost-w' : 'ghost-b'); n.push('2'); }
       if (sq === hintMove[2]) {
         // Arrow back onto the start square: keep the amazon drawn there.
         if (sq !== hintMove[0]) cls.push('hint-arrow');
@@ -365,12 +396,15 @@ function render() {
     el.setAttribute('aria-label', sqName(sq) + labelFor(v));
   }
   els.board.classList.toggle('flipped', flip);
+  els.boardArea.classList.toggle('viewing', viewing());
   renderStatus();
-  renderEval();
+  renderEvalBar(st);
   renderMoves();
   renderAnalysis();
   renderCoach();
   renderBook();
+  renderAnnotations();
+  renderViewControls();
   els.undo.disabled = busy || undoCount() === 0;
   els.cancel.disabled = sel.from < 0;
 }
@@ -378,7 +412,8 @@ function render() {
 // Territory by queen distance: who reaches the empty square first, and how
 // clearly (distance gap).
 function heatFor(sq) {
-  const dw = state.dist[sq], db = state.dist[100 + sq];
+  const st = shownState();
+  const dw = st.dist[sq], db = st.dist[100 + sq];
   if (dw === 255 && db === 255) return null;
   if (dw === db) return { cls: 'h-tie', amt: '30%' };
   const gap = Math.abs(dw - db);
@@ -386,16 +421,36 @@ function heatFor(sq) {
   return { cls: dw < db ? 'h-white' : 'h-black', amt };
 }
 
-function renderEval() {
-  const e = state.evaluation;
-  let v;
-  if (state.over) v = state.winner === 0 ? 1 : -1;
-  else v = Math.tanh(e.score / VALUE_SCALE);
-  els.evalFill.style.width = pct(v);
-  const sign = (x) => (Math.abs(x) < 0.05 ? '0.0' : (x > 0 ? '+' : '') + x.toFixed(1));
-  els.evalText.textContent = state.over
-    ? ''
-    : `정적 평가 (백 기준) ${sign(e.score)} · 영역 ${sign(e.t1)} · 국면 ${e.phase >= 0.99 ? '초반' : e.phase > 0.3 ? '중반' : '종반'}`;
+// White's winning chances for a position: the engine's search if there is
+// one (or the search of the previous position when its best move was
+// played), otherwise the static evaluation. Always from White's side, like
+// a chess.com evaluation bar.
+function whiteChance(st) {
+  if (st.over) return st.winner === 0 ? 1 : 0;
+  const info = analysisCache.get(hkey(st.history));
+  if (info) return info.proven ? (info.proven > 0 ? 1 : 0) : (info.value + 1) / 2;
+  const H = st.history;
+  if (H.length >= 3) {
+    const parent = analysisCache.get(hkey(H.slice(0, H.length - 3)));
+    if (parent && parent.best && sameHistory(parent.best.sq, H.slice(H.length - 3))) {
+      return parent.proven ? (parent.proven > 0 ? 1 : 0) : (parent.value + 1) / 2;
+    }
+  }
+  return (Math.tanh(st.evaluation.score / VALUE_SCALE) + 1) / 2;
+}
+
+function renderEvalBar(st) {
+  const p = whiteChance(st);
+  const flip = isFlipped();
+  // White fills from White's edge of the board (the bottom unless flipped).
+  els.vfill.style.height = `${(100 * p).toFixed(1)}%`;
+  els.vbar.classList.toggle('flip', flip);
+  const lead = p >= 0.5 ? 0 : 1;
+  const shownPct = Math.round(100 * (lead === 0 ? p : 1 - p));
+  els.vlabel.textContent = `${shownPct}`;
+  els.vlabel.className = `vlabel ${lead === 0 ? 'w' : 'b'}`;
+  els.vbar.setAttribute('aria-label', `평가: 백 승률 ${Math.round(100 * p)}%`);
+  els.vbar.title = `백 승률 ${Math.round(100 * p)}% · 흑 승률 ${Math.round(100 * (1 - p))}%`;
 }
 
 function labelFor(v) {
@@ -407,6 +462,11 @@ const colorName = (c) => (c === 0 ? '백' : '흑');
 function renderStatus() {
   const s = state;
   let text, hint = '';
+  if (viewing()) {
+    els.status.textContent = `${viewPly}수째 국면을 보는 중`;
+    els.hint.textContent = '→ 키나 ▶로 넘기고, 마지막 국면에서 다시 둘 수 있어요.';
+    return;
+  }
   if (s.over) {
     text = `게임 종료 — ${colorName(s.winner)} 승리 (${colorName(s.side)}이 둘 곳이 없음)`;
   } else if (isHumanTurn()) {
@@ -427,14 +487,13 @@ function renderMoves() {
   if (isAnalysis()) return renderLine();
   const n = state.notation;
   const rows = [];
+  const shown = shownPly();
   const cell = (j) => {
     if (j >= n.length) return '<td></td>';
-    const ex = coachOn() && j % 2 === settings.human
-      ? explainCache.get(hkey(state.history.slice(0, 3 * (j + 1))))
-      : null;
+    const ex = explainCache.get(hkey(state.history.slice(0, 3 * (j + 1))));
     const mark = ex ? GRADE_MARK[ex.grade] : '';
-    const cls = [j === n.length - 1 ? 'cur' : '', ex ? `g-${ex.grade}` : ''].join(' ').trim();
-    return `<td${cls ? ` class="${cls}"` : ''}>${n[j]}${mark ? `<span class="mark">${mark}</span>` : ''}</td>`;
+    const cls = ['mv', j === n.length - 1 ? 'cur' : '', j === shown - 1 ? 'shown' : '', j >= shown ? 'ahead' : '', ex ? `g-${ex.grade}` : ''].join(' ');
+    return `<td class="${cls}" data-ply="${j + 1}">${n[j]}${mark ? `<span class="mark">${mark}</span>` : ''}</td>`;
   };
   for (let i = 0; i < n.length; i += 2) {
     rows.push(`<tr><td>${i / 2 + 1}</td>${cell(i)}${cell(i + 1)}</tr>`);
@@ -455,6 +514,13 @@ function showError(msg) {
 // ---- input ----------------------------------------------------------------
 
 function onCell(sq) {
+  if (drawMode || suppressClick) return;
+  if (viewing()) {
+    // Tapping the board while looking back returns to the live position.
+    viewPly = null;
+    render();
+    return;
+  }
   if (!isHumanTurn() || busy) return;
   if (sel.to >= 0) {
     // Arrow stage.
@@ -555,10 +621,12 @@ els.opponent.addEventListener('change', newGame);
 els.color.addEventListener('change', newGame);
 
 document.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLTextAreaElement) return;
-  if (isAnalysis() && e.key === 'ArrowLeft') els.prev.click();
-  else if (isAnalysis() && e.key === 'ArrowRight') els.next.click();
-  else if (e.key === 'Escape') els.cancel.click();
+  if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); stepView(-1); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); stepView(1); }
+  else if (e.key === 'Home') { e.preventDefault(); goToPly(0); }
+  else if (e.key === 'End') { e.preventDefault(); goToPly(Infinity); }
+  else if (e.key === 'Escape') { if (drawMode) setDrawMode(false); else els.cancel.click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
     e.preventDefault();
     els.undo.click();
@@ -580,7 +648,16 @@ const explainCache = new Map();   // history key (through the move) -> explanati
 let analysisToken = 0;
 let analyzingNow = false;
 let showBest = false;
-const GRADE_MARK = { best: '', good: '', inaccuracy: '?!', mistake: '?', blunder: '??' };
+const GRADE_MARK = { best: '!', good: '', inaccuracy: '?!', mistake: '?', blunder: '??' };
+const GRADE_LABEL = { best: '최선의 수', good: '좋은 수', inaccuracy: '아쉬운 수', mistake: '실수', blunder: '큰 실수' };
+const GRADE_HEAD = {
+  best: '엔진이 고른 수와 같은 값어치예요.',
+  good: '엔진 최선과 거의 차이 없어요.',
+  inaccuracy: '나쁘지 않지만 더 나은 수가 있었어요.',
+  mistake: '형세가 상대 쪽으로 기울었어요.',
+  blunder: '형세가 크게 기울었어요.',
+};
+const explaining = new Set(); // history keys whose move is being explained
 
 const flat = (moves) => moves.flat();
 const hkey = (hist) => Array.from(hist).join(',');
@@ -601,6 +678,13 @@ function moverP(info, mover) {
 function currentExplanation() {
   if (!state || plyOf() === 0) return null;
   return explainCache.get(hkey(state.history)) || null;
+}
+
+// Explanation of the move that led to the position on screen.
+function shownExplanation() {
+  const st = shownState();
+  if (!st || st.history.length === 0) return null;
+  return explainCache.get(hkey(st.history)) || null;
 }
 
 function currentBestMove() {
@@ -669,10 +753,20 @@ async function analyzePrefix(hist, t, token) {
 
 async function explainPrefix(hist, n, token) {
   const key = hkey(hist.slice(0, 3 * n));
-  if (explainCache.has(key)) return;
+  if (explainCache.has(key) || explaining.has(key)) return;
+  explaining.add(key);
+  try {
+    await explainPrefixInner(hist, n, token, key);
+  } finally {
+    explaining.delete(key);
+    render();
+  }
+}
+
+async function explainPrefixInner(hist, n, token, key) {
   const beforeKey = hkey(hist.slice(0, 3 * (n - 1)));
   const before = analysisCache.get(beforeKey) || (await pendingAnalysis.get(beforeKey));
-  const after = analysisCache.get(key);
+  const after = analysisCache.get(key) || (await pendingAnalysis.get(key));
   if (!before || !after || token !== analysisToken) return;
   const mover = (n - 1) % 2;
   // Compare within one search tree when the played move was explored
@@ -721,20 +815,56 @@ function esc(t) {
   return t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 }
 
-// Explanation card for move number `n` (1-based ply) `mv`.
-function explanationHtml(ex, n, mv, who = '') {
-  const num = `${Math.floor((n - 1) / 2) + 1}. ${colorName((n - 1) % 2)}${who}`;
-  const li = (p) => `<li class="${p.positive ? 'pos' : 'neg'}">${esc(p.text)}</li>`;
-  let html = `<p class="ex-head"><span class="grade g-${ex.grade}">${ex.label}</span> ${num} ${moveName(mv)}</p>`;
-  html += `<p class="ex-sum">${esc(ex.summary)}</p>`;
-  if (ex.points.length) html += `<ul class="ex-pts">${ex.points.map(li).join('')}</ul>`;
-  if (ex.replyPoints.length) html += `<ul class="ex-pts threat">${ex.replyPoints.map((p) => `<li class="neg">${esc(p.text)}</li>`).join('')}</ul>`;
-  if (ex.best) {
-    html += `<p class="ex-best">${ex.grade === 'good' ? '그 국면의 비슷하게 좋은 대안' : '그 국면의 추천 수'}: <b>${ex.best.move}</b></p>`;
-    if (ex.bestPoints.length) html += `<ul class="ex-pts">${ex.bestPoints.map(li).join('')}</ul>`;
+// Engine texts say "내/상대" from the mover's side; name the colours instead
+// so the card reads the same whoever is looking (and whoever moved).
+function inColors(text, mover) {
+  const me = colorName(mover), opp = colorName(1 - mover);
+  // 백/흑 both end in a consonant: 가→이, 는→은, 를→을.
+  return text.replace(/내가 /g, '\u0001이 ').replace(/내 /g, '\u0001 ')
+    .replace(/상대가 /g, `${opp}이 `).replace(/상대는 /g, `${opp}은 `).replace(/상대를 /g, `${opp}을 `)
+    .replace(/상대의 /g, `${opp}의 `).replace(/상대 /g, `${opp} `).replace(/\u0001/g, me);
+}
+
+// Move-evaluation card (layout follows the Lines of Action site): grade badge,
+// move, verdict, White's winning chances with the best move as a tick, then
+// reasons and what the engine would have played / the opponent's answer.
+// `n` is the 1-based ply of the move `mv`.
+function evalCard(ex, n, mv, who = '') {
+  const mover = (n - 1) % 2;
+  const me = colorName(mover), opp = colorName(1 - mover);
+  const top = `<span class="ev-move"><span class="chip ${mover === 0 ? 'w' : 'b'}"></span>${Math.floor((n - 1) / 2) + 1}. ${me} ${moveName(mv)}${who ? `<span class="ev-who">${who}</span>` : ''}</span>`;
+  if (!ex) {
+    return `<div class="ev-card"><div class="ev-top">${top}</div><div class="ev-wait"><span class="pulse"></span>이 수를 따져 보는 중</div></div>`;
   }
-  html += `<p class="ex-bal">${esc(ex.balance)}</p>`;
-  return html;
+  const win = /이기는 수/.test(ex.summary);
+  const label = win ? '이기는 수' : GRADE_LABEL[ex.grade] || ex.label;
+  const head = win ? ex.summary
+    : who === '엔진 수' && ex.grade === 'best' ? '엔진이 이 국면에서 고른 최선의 수예요.'
+    : GRADE_HEAD[ex.grade] || ex.summary;
+  const toWhite = (p) => (mover === 0 ? p : 1 - p);
+  const a = Math.round(100 * toWhite(ex.pAfter));
+  const b = Math.round(100 * toWhite(ex.pBefore));
+  const loss = Math.round(100 * (ex.pBefore - ex.pAfter));
+  let h = `<div class="ev-card"><div class="ev-top"><span class="ev-badge" data-k="${win ? 'best' : ex.grade}">${label}</span>${top}</div>`;
+  h += `<p class="ev-head">${esc(head)}</p>`;
+  h += `<div class="ev-odds"><div class="ev-odds-row"><span>둔 뒤 백 승률</span><b>${a}%</b>` +
+    (loss > 0
+      ? `<span class="ev-delta" data-k="${ex.grade}">${me}이 최선을 뒀다면 백 ${b}% · ${me} −${loss}%p</span>`
+      : `<span class="ev-delta">엔진 최선과 같아요</span>`) +
+    `</div><div class="ev-track" aria-hidden="true"><div class="ev-now" style="width:${a}%"></div>${loss > 0 ? `<div class="ev-tick" style="left:${b}%"></div>` : ''}</div></div>`;
+  const li = (t) => (p) => `<li data-t="${t === null ? (p.positive ? 'plus' : 'minus') : t}">${esc(inColors(p.text, mover))}</li>`;
+  if (ex.points.length) h += `<ul class="ev-why">${ex.points.map(li(null)).join('')}</ul>`;
+  if (ex.best) {
+    h += `<div class="ev-sub"><div class="label">${ex.grade === 'good' ? '비슷하게 좋은 대안' : '엔진이라면'} · <strong>${me} ${ex.best.move}</strong></div>`;
+    if (ex.bestPoints.length) h += `<ul class="ev-why">${ex.bestPoints.map(li('plus')).join('')}</ul>`;
+    h += '</div>';
+  }
+  if (ex.replyPoints.length) {
+    h += `<div class="ev-sub"><div class="label">${opp}의 좋은 응수${ex.reply ? ` · <strong>${opp} ${ex.reply}</strong>` : ''}</div>`;
+    h += `<ul class="ev-why">${ex.replyPoints.map(li('minus')).join('')}</ul></div>`;
+  }
+  h += `<p class="note">${esc(ex.balance)}</p></div>`;
+  return h;
 }
 
 function renderAnalysis() {
@@ -752,10 +882,10 @@ function renderAnalysis() {
     els.posInfo.textContent = `게임 종료 — ${colorName(state.winner)} 승리`;
   } else if (info) {
     const side = colorName(state.side);
-    const p = Math.round(100 * moverP(info, state.side));
-    const verdict = info.proven ? (moverP(info, state.side) > 0.5 ? '필승 확인' : '필패 확인') : `승률 ${p}%`;
-    const best = info.best ? ` · 추천 ${info.best.move}` : '';
-    els.posInfo.textContent = `${side} 차례 · ${side} ${verdict}${best}`;
+    const pw = Math.round(100 * moverP(info, 0));
+    const verdict = info.proven ? `${info.proven > 0 ? '백' : '흑'} 필승 확인` : `백 승률 ${pw}%`;
+    const best = info.best ? ` · ${side} 추천 ${info.best.move}` : '';
+    els.posInfo.textContent = `${side} 차례 · ${verdict}${best}`;
   } else {
     els.posInfo.textContent = analyzingNow ? '이 국면을 분석하는 중…' : '';
   }
@@ -764,9 +894,9 @@ function renderAnalysis() {
   if (!ex) {
     els.explain.innerHTML = n === 0
       ? '<p class="muted">수를 두면 그 수가 왜 좋은지, 왜 아쉬운지 설명해 드려요.</p>'
-      : analyzingNow ? '<p class="muted">직전 수를 분석하는 중…</p>' : '';
+      : analyzingNow ? evalCard(null, n, state.history.slice(3 * (n - 1), 3 * n)) : '';
   } else {
-    els.explain.innerHTML = explanationHtml(ex, n, state.history.slice(3 * (n - 1), 3 * n));
+    els.explain.innerHTML = evalCard(ex, n, state.history.slice(3 * (n - 1), 3 * n));
   }
   renderGraph();
 }
@@ -815,7 +945,7 @@ function renderLine() {
   const cells = line.map((m, i) => {
     const ex = explainCache.get(hkey(flat(line.slice(0, i + 1))));
     const mark = ex ? GRADE_MARK[ex.grade] : '';
-    const cls = ['mv', i === n - 1 ? 'cur' : '', i >= n ? 'ahead' : '', ex ? `g-${ex.grade}` : ''].join(' ');
+    const cls = ['mv', i === n - 1 ? 'cur shown' : '', i >= n ? 'ahead' : '', ex ? `g-${ex.grade}` : ''].join(' ');
     return `<td class="${cls}" data-ply="${i + 1}">${moveName(m)}${mark ? `<span class="mark">${mark}</span>` : ''}</td>`;
   });
   const rows = [];
@@ -832,7 +962,7 @@ function renderLine() {
 
 els.moves.addEventListener('click', (e) => {
   const td = e.target.closest('td.mv');
-  if (td && isAnalysis()) navigate(Number(td.dataset.ply));
+  if (td) goToPly(Number(td.dataset.ply));
 });
 
 els.prev.addEventListener('click', () => navigate(plyOf() - 1));
@@ -936,10 +1066,18 @@ function coachPrepare() {
   pendingAnalysis.set(key, p);
 }
 
-// After the AI replied: explain the human's move and the AI's reply.
+// After the AI replied: explain the human's move, then the AI's move. The
+// AI's own search is the "before" of its move; the "after" is the analysis
+// of the human's new position, which coachPrepare() has already started.
 async function coachAfterAi(beforeAi, aiInfo, aiMove, my) {
   const token = analysisToken;
   const n = beforeAi.length / 3; // plies up to and including the human move
+  const withAi = beforeAi.concat(aiMove);
+  if (state.over && sameHistory(state.history, withAi)) {
+    // The AI's move ended the game: the "after" value is the result.
+    const v = state.winner === 0 ? 1 : -1;
+    analysisCache.set(hkey(withAi), { value: v, proven: v, best: null, pv: [], candidates: [], iterations: 0 });
+  }
   if (n > 0 && (n - 1) % 2 === settings.human) {
     coachBusy = true;
     render();
@@ -947,13 +1085,7 @@ async function coachAfterAi(beforeAi, aiInfo, aiMove, my) {
     coachBusy = false;
   }
   if (my !== epoch || token !== analysisToken) return;
-  // The AI's move, explained as if best: this lists what it aims at.
-  const withAi = beforeAi.concat(aiMove);
-  const p = moverP(aiInfo, n % 2);
-  const r = await call('explain', { history: withAi, ply: n, best: aiMove, reply: [], pBefore: p, pAfter: p });
-  if (my !== epoch || token !== analysisToken || !r.result) return;
-  explainCache.set(hkey(withAi), r.result);
-  render();
+  await explainPrefix(withAi, n + 1, token);
 }
 let coachBusy = false;
 
@@ -969,56 +1101,53 @@ async function coachFinal(hist) {
   render();
 }
 
-// Engine-move texts are written from the mover's (engine's) point of view;
-// turn "내/상대" around for the human reading them.
-function fromHumanView(text) {
-  return text.replace(/내 /g, '\u0001').replace(/상대 /g, '내 ').replace(/\u0001/g, '엔진의 ');
-}
-
 function renderCoach() {
   const on = coachOn() && state;
   els.coachPanel.hidden = !on;
   if (!on) return;
   const H = state.history;
   const plies = H.length / 3;
-  // Latest human move and the AI move after it.
-  let mine = -1;
-  for (let i = plies - 1; i >= 0; i--) {
-    if (i % 2 === settings.human) {
-      mine = i;
-      break;
-    }
-  }
-  const exMine = mine >= 0 ? explainCache.get(hkey(H.slice(0, 3 * (mine + 1)))) : null;
-  const exAi = mine >= 0 && mine + 1 < plies ? explainCache.get(hkey(H.slice(0, 3 * (mine + 2)))) : null;
+  const card = (i) => {
+    const key = hkey(H.slice(0, 3 * (i + 1)));
+    const ex = explainCache.get(key) || null;
+    const who = i % 2 === settings.human ? '내 수' : '엔진 수';
+    if (!ex && !explaining.has(key) && !pendingAnalysis.size && !coachBusy && !busy) return '';
+    return evalCard(ex, i + 1, H.slice(3 * i, 3 * i + 3), who);
+  };
   let html = '';
-  if (exMine) {
-    html += explanationHtml(exMine, mine + 1, H.slice(3 * mine, 3 * mine + 3), ' (나)');
-  } else if (mine >= 0 && coachBusy) {
-    html += '<p class="muted">내 수를 분석하는 중…</p>';
-  } else if (mine < 0) {
-    html += '<p class="muted">수를 두면 엔진이 응수한 뒤 그 수가 왜 좋은지, 왜 아쉬운지 알려 드려요.</p>';
+  if (viewing()) {
+    // Looking back: the move that led to the position on screen.
+    html = viewPly > 0 ? card(viewPly - 1) || '<p class="muted">이 수는 평가하지 않았어요.</p>' : '<p class="muted">시작 국면이에요.</p>';
+  } else {
+    // Live: my latest move and the engine's answer to it, both evaluated.
+    let mine = -1;
+    for (let i = plies - 1; i >= 0; i--) {
+      if (i % 2 === settings.human) {
+        mine = i;
+        break;
+      }
+    }
+    if (mine < 0) {
+      html = plies > 0 ? card(plies - 1) : '';
+      html += '<p class="muted">수를 두면 내 수와 엔진의 응수가 왜 좋은지, 왜 아쉬운지 바로 알려 드려요.</p>';
+    } else {
+      html = card(mine);
+      if (mine + 1 < plies) html += card(mine + 1);
+    }
+    if (state.over) html += coachSummary();
   }
-  if (exAi) {
-    const pts = exAi.points.filter((p) => p.positive).slice(0, 2);
-    const mv = H.slice(3 * (mine + 1), 3 * (mine + 2));
-    html += `<div class="ai-intent"><p class="ex-head">엔진의 수 ${moveName(mv)}</p>`;
-    html += pts.length
-      ? `<ul class="ex-pts">${pts.map((p) => `<li class="pos">${esc(fromHumanView(p.text))}</li>`).join('')}</ul>`
-      : '<p class="muted">큰 변화 없이 균형을 유지하는 수예요.</p>';
-    html += '</div>';
-  }
-  if (state.over) html += coachSummary();
   els.coachBody.innerHTML = html;
+  els.evPrev.disabled = shownPly() <= 0;
+  els.evNext.disabled = shownPly() >= livePlies();
 
   const info = analysisCache.get(hkey(H));
   const ready = isHumanTurn() && info && info.best;
-  els.hintBtn.disabled = !isHumanTurn() || (!ready && !pendingAnalysis.size);
+  els.hintBtn.disabled = viewing() || !isHumanTurn() || (!ready && !pendingAnalysis.size);
   els.hintBtn.textContent = !isHumanTurn()
     ? '힌트'
     : ready ? (coachHint ? '힌트 숨기기' : '힌트 (추천 수 보기)') : '힌트 준비 중…';
   els.hintBtn.classList.toggle('on', coachHint && ready);
-  els.coachLegend.hidden = !(coachHint && ready);
+  els.coachLegend.hidden = !(coachHint && ready) || viewing();
 }
 
 // Grade counts of the human's moves, shown at the end of the game.
@@ -1033,14 +1162,15 @@ function coachSummary() {
     total++;
   }
   if (!total) return '';
-  const labels = { best: '최선', good: '좋음', inaccuracy: '부정확', mistake: '실수', blunder: '대실수' };
   const parts = Object.keys(counts).map(
-    (k) => `<span class="grade g-${k}">${labels[k]} ${counts[k]}</span>`,
+    (k) => `<span class="ev-badge" data-k="${k}">${GRADE_LABEL[k]} ${counts[k]}</span>`,
   );
   const won = state.winner === settings.human;
   return `<div class="coach-sum"><p class="ex-head">${won ? '승리했어요!' : '대국 종료'} · 내 수 ${total}개 평가</p><p class="sum-row">${parts.join(' ')}</p></div>`;
 }
 
+els.evPrev.addEventListener('click', () => stepView(-1));
+els.evNext.addEventListener('click', () => stepView(1));
 els.hintBtn.addEventListener('click', () => {
   coachHint = !coachHint;
   render();
@@ -1150,6 +1280,136 @@ async function openInAnalysis() {
   ensureAnalyzed();
 }
 
+// ---- looking back through the game (← →) -----------------------------------
+//
+// Analysis mode moves the real position (navigate); the other modes only
+// show stored snapshots of earlier positions.
+
+function livePlies() {
+  return isAnalysis() ? line.length : state.history.length / 3;
+}
+
+function shownPly() {
+  if (isAnalysis()) return plyOf();
+  return viewPly === null ? state.history.length / 3 : viewPly;
+}
+
+function goToPly(n) {
+  if (!state) return;
+  n = Math.max(0, Math.min(livePlies(), n));
+  if (isAnalysis()) return navigate(n);
+  if (sel.from >= 0) sel = { from: -1, to: -1 };
+  viewPly = n >= state.history.length / 3 ? null : n;
+  annotations = [];
+  render();
+}
+
+function stepView(d) {
+  goToPly(shownPly() + d);
+}
+
+function renderViewControls() {
+  const n = shownPly();
+  els.viewPrev.disabled = n <= 0 || (isAnalysis() && busy);
+  els.viewNext.disabled = n >= livePlies() || (isAnalysis() && busy);
+  els.drawBtn.setAttribute('aria-pressed', String(drawMode));
+  els.drawBtn.classList.toggle('on', drawMode);
+  els.clearDraw.disabled = annotations.length === 0;
+  els.viewInfo.textContent = drawMode
+    ? '그리기: 칸을 누르면 동그라미, 칸에서 칸으로 끌면 화살표. 같은 걸 다시 그리면 지워져요.'
+    : viewing() ? `${n}수째 국면 · 마지막 국면은 → 또는 판을 누르세요` : '';
+}
+
+els.viewPrev.addEventListener('click', () => stepView(-1));
+els.viewNext.addEventListener('click', () => stepView(1));
+
+// ---- drawing on the board ---------------------------------------------------
+//
+// Circles and arrows for explaining a position. Right-click / right-drag on
+// a computer; on touch screens switch on "그리기" and tap / drag. Drawings
+// belong to the position on screen and disappear when it changes.
+
+let annotations = []; // { kind: 'circle', sq } | { kind: 'arrow', from, to }
+let drawMode = false;
+let drawStart = null; // { sq, pointerId }
+let suppressClick = false;
+
+function setDrawMode(on) {
+  drawMode = on;
+  els.boardArea.classList.toggle('drawing', on);
+  render();
+}
+
+// Board square under a screen point, or -1.
+function squareFromPoint(x, y) {
+  const r = els.board.getBoundingClientRect();
+  if (x < r.left || y < r.top || x >= r.right || y >= r.bottom) return -1;
+  const vc = Math.floor(((x - r.left) / r.width) * 10);
+  const vr = Math.floor(((y - r.top) / r.height) * 10);
+  return squareAt(vr * 10 + vc);
+}
+
+// Centre of a square in the 0..100 overlay coordinates.
+function squareCenter(sq) {
+  const flip = isFlipped();
+  const row = Math.floor(sq / 10), col = sq % 10;
+  const vr = flip ? row : 9 - row;
+  const vc = flip ? 9 - col : col;
+  return [vc * 10 + 5, vr * 10 + 5];
+}
+
+function toggleAnnotation(a) {
+  const same = (b) => b.kind === a.kind && (a.kind === 'circle' ? b.sq === a.sq : b.from === a.from && b.to === a.to);
+  const i = annotations.findIndex(same);
+  if (i >= 0) annotations.splice(i, 1);
+  else annotations.push(a);
+  render();
+}
+
+function renderAnnotations() {
+  const parts = ['<defs><marker id="ah" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahead"/></marker></defs>'];
+  for (const a of annotations) {
+    if (a.kind === 'circle') {
+      const [x, y] = squareCenter(a.sq);
+      parts.push(`<circle cx="${x}" cy="${y}" r="4.1" class="acircle"/>`);
+    } else {
+      const [x1, y1] = squareCenter(a.from);
+      let [x2, y2] = squareCenter(a.to);
+      // Stop short of the centre so the head sits inside the target square.
+      const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+      x2 -= (dx / len) * 2.2;
+      y2 -= (dy / len) * 2.2;
+      parts.push(`<line x1="${x1}" y1="${y1}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" class="aline" marker-end="url(#ah)"/>`);
+    }
+  }
+  els.annot.innerHTML = parts.join('');
+}
+
+els.boardArea.addEventListener('contextmenu', (e) => e.preventDefault());
+els.boardArea.addEventListener('pointerdown', (e) => {
+  if (!(e.button === 2 || (drawMode && e.button === 0))) return;
+  const sq = squareFromPoint(e.clientX, e.clientY);
+  if (sq < 0) return;
+  e.preventDefault();
+  drawStart = { sq, pointerId: e.pointerId };
+});
+window.addEventListener('pointerup', (e) => {
+  if (!drawStart || e.pointerId !== drawStart.pointerId) return;
+  const from = drawStart.sq;
+  drawStart = null;
+  const to = squareFromPoint(e.clientX, e.clientY);
+  if (to < 0) return;
+  toggleAnnotation(to === from ? { kind: 'circle', sq: to } : { kind: 'arrow', from, to });
+  // The click that follows a left-button drawing must not play a move.
+  suppressClick = true;
+  setTimeout(() => (suppressClick = false), 0);
+});
+els.drawBtn.addEventListener('click', () => setDrawMode(!drawMode));
+els.clearDraw.addEventListener('click', () => {
+  annotations = [];
+  render();
+});
+
 // Expose for debugging and automated checks.
 window.amazons = {
   call,
@@ -1162,6 +1422,8 @@ window.amazons = {
   explainCache,
   get analyzing() { return analyzingNow; },
   get busy() { return busy; },
+  get viewPly() { return viewPly; },
+  get annotations() { return annotations; },
   get coachBusy() { return coachBusy || pendingAnalysis.size > 0; },
 };
 
