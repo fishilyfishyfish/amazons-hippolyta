@@ -190,6 +190,37 @@ impl Game {
         }
     }
 
+    /// `[from, to, arrow]` of the move a difficulty-level opponent plays
+    /// (levels 1–4; level 5 is the full parallel search driven from JS).
+    /// Levels 1–3 are human-like (`human.rs`) with a per-game style derived
+    /// from `game_seed`; level 4 is a short fixed-iteration MCTS. Empty if
+    /// there is no legal move.
+    pub fn level_move(&self, level: u8, game_seed: f64, move_seed: f64) -> Vec<u8> {
+        if !self.board.has_moves() {
+            return Vec::new();
+        }
+        let mut rng = Rng::new(move_seed as u64);
+        let m = match crate::players::level_spec(level) {
+            crate::players::PlayerSpec::Human(l) => {
+                let style = crate::human::game_style(&l, &mut Rng::new(game_seed as u64));
+                crate::human::human_move(&self.board, &self.history, &l, &style, &mut rng)
+            }
+            _ => {
+                let cfg = MctsConfig {
+                    seed: move_seed as u64,
+                    ..MctsConfig::default()
+                };
+                let mut t = Mcts::new(self.board, cfg);
+                t.run(crate::players::LEVEL4_ITERATIONS);
+                t.best_move()
+            }
+        };
+        match m {
+            Some(m) => vec![m.from, m.to, m.arrow],
+            None => Vec::new(),
+        }
+    }
+
     /// Starts a fresh MCTS on the current position (default config).
     pub fn search_start(&mut self) {
         self.search = Some(Mcts::new(self.board, MctsConfig::default()));

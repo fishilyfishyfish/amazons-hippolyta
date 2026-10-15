@@ -49,6 +49,8 @@ const handlers = {
     return true;
   },
   play: ({ move }) => game.play(move[0], move[1], move[2]),
+  // A difficulty-level opponent's move (levels 1–4), not played.
+  levelMove: ({ level, gameSeed, moveSeed }) => Array.from(game.level_move(level, gameSeed, moveSeed)),
   undo({ count }) {
     let n = 0;
     while (n < count && game.undo()) n++;

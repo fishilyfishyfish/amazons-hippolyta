@@ -3,6 +3,7 @@
 pub mod board;
 pub mod eval;
 pub mod explain;
+pub mod human;
 pub mod naive;
 pub mod nn;
 pub mod players;

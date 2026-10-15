@@ -1,7 +1,8 @@
 //! Named player configurations, used by the arena (self-play strength
 //! measurement) and by the web UI.
 //!
-//! Spec syntax: `random`, `greedy`, `mcts:<iterations>` or
+//! Spec syntax: `random`, `greedy`, `human:<1-3>` (human-like levels),
+//! `level:<1-5>` (the web difficulty levels), `mcts:<iterations>` or
 //! `mcts-ms:<milliseconds>`, optionally followed by `,key=value` overrides of
 //! `MctsConfig` fields (`c`, `top_k`, `half_k`, `temp`, `scale`, `fpu`) and
 //! evaluation weights (`w_tie`, `w_phase`, `w_t1e`, `w_t1o`, `w_t2`, `w_c1`,
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::board::{Board, Move};
 use crate::eval::EvalWeights;
+use crate::human::{game_style, human_level, human_move, HumanLevel};
 use crate::rng::Rng;
 use crate::search::{greedy_move, merge_candidates, Mcts, MctsConfig};
 
@@ -40,6 +42,8 @@ pub enum Budget {
 pub enum PlayerSpec {
     Random,
     Greedy(EvalWeights),
+    /// Human-like player (`human.rs`).
+    Human(HumanLevel),
     /// Config, budget per tree, number of independent trees (root
     /// parallelism, run one after another so results don't depend on cores;
     /// trees after the first use `jitter` 0.5 unless set).
@@ -52,6 +56,7 @@ impl PlayerSpec {
         let head = parts.next().unwrap_or("").trim();
         let mut cfg = MctsConfig::default();
         let mut par = 1u32;
+        let mut hopts: Vec<(String, f32)> = Vec::new();
         for kv in parts {
             let (k, v) = kv.split_once('=').ok_or(format!("bad option {kv:?}"))?;
             let num = |v: &str| v.parse::<f32>().map_err(|e| format!("{k}: {e}"));
@@ -69,6 +74,7 @@ impl PlayerSpec {
                 "nval" => cfg.net_value = num(v)? as u8,
                 "npol" => cfg.net_policy = num(v)? != 0.0,
                 "par" => par = num(v)? as u32,
+                k if k.starts_with('h') => hopts.push((k.to_string(), num(v)?)),
                 "w_tie" => cfg.weights.tie = num(v)?,
                 "w_phase" => cfg.weights.phase_w = num(v)?,
                 "w_t1e" => cfg.weights.t1_end = num(v)?,
@@ -85,6 +91,27 @@ impl PlayerSpec {
         match kind {
             "random" => Ok(PlayerSpec::Random),
             "greedy" => Ok(PlayerSpec::Greedy(cfg.weights)),
+            "human" => {
+                let mut h = human_level(n()?.clamp(1, 3) as u8);
+                for (k, v) in hopts {
+                    match k.as_str() {
+                        "hv" => h.vision = v as usize,
+                        "hs" => h.sharpness = v,
+                        "ha" => h.arrows = v as usize,
+                        "hc" => h.check = v as usize,
+                        "hrv" => h.reply_vision = v as usize,
+                        "hra" => h.reply_arrows = v as usize,
+                        "ht" => h.choice_temp = v,
+                        "het" => h.endgame_temp = v,
+                        "hw" => h.spot_win = v,
+                        "hst" => h.style = v,
+                        "hi" => h.intuition = v,
+                        _ => return Err(format!("unknown option {k:?}")),
+                    }
+                }
+                Ok(PlayerSpec::Human(h))
+            }
+            "level" => Ok(level_spec(n()? as u8)),
             "mcts" => Ok(PlayerSpec::Mcts(cfg, Budget::Iterations(n()? as u32), par)),
             "mcts-ms" => Ok(PlayerSpec::Mcts(cfg, Budget::Millis(n()?), par)),
             _ => Err(format!("unknown player {head:?}")),
@@ -92,21 +119,60 @@ impl PlayerSpec {
     }
 }
 
+/// MCTS iterations of difficulty levels 4 and 5 (fixed iterations so the
+/// strength does not depend on the device; the web's level 5 is the full
+/// time-limited parallel search, roughly this many iterations or more).
+pub const LEVEL4_ITERATIONS: u32 = 30;
+pub const LEVEL5_ITERATIONS: u32 = 8000;
+
+/// The player of a web difficulty level (1–5).
+pub fn level_spec(level: u8) -> PlayerSpec {
+    match level {
+        0..=3 => PlayerSpec::Human(human_level(level)),
+        4 => PlayerSpec::Mcts(
+            MctsConfig::default(),
+            Budget::Iterations(LEVEL4_ITERATIONS),
+            1,
+        ),
+        _ => PlayerSpec::Mcts(
+            MctsConfig::default(),
+            Budget::Iterations(LEVEL5_ITERATIONS),
+            1,
+        ),
+    }
+}
+
 pub struct Player {
     pub spec: PlayerSpec,
     rng: Rng,
+    /// Per-game evaluation style of a human-like player.
+    style: EvalWeights,
 }
 
 impl Player {
     pub fn new(spec: PlayerSpec, seed: u64) -> Player {
-        Player {
-            spec,
-            rng: Rng::new(seed),
-        }
+        let mut rng = Rng::new(seed);
+        let style = match spec {
+            PlayerSpec::Human(l) => game_style(&l, &mut rng),
+            _ => EvalWeights::default(),
+        };
+        Player { spec, rng, style }
     }
 
     pub fn choose(&mut self, board: &Board) -> Option<Move> {
+        self.choose_in_game(board, &[])
+    }
+
+    /// Like `choose`, with the moves played so far (human-like players react
+    /// to the last moves).
+    pub fn choose_in_game(&mut self, board: &Board, history: &[Move]) -> Option<Move> {
         match self.spec {
+            PlayerSpec::Human(l) => {
+                if !board.has_moves() {
+                    return None;
+                }
+                human_move(board, history, &l, &self.style, &mut self.rng)
+            }
             PlayerSpec::Random => crate::random_move(board, &mut self.rng),
             PlayerSpec::Greedy(w) => greedy_move(board, &w),
             PlayerSpec::Mcts(cfg, budget, par) => {

@@ -27,16 +27,18 @@ fn play(
     let mut pa = Player::new(a, seed);
     let mut pb = Player::new(b, seed ^ 0xFFFF);
     let mut plies = opening.len();
+    let mut history = opening.to_vec();
     loop {
         let a_to_move = (board.side == Color::White) == a_white;
         let m = if a_to_move {
-            pa.choose(&board)
+            pa.choose_in_game(&board, &history)
         } else {
-            pb.choose(&board)
+            pb.choose_in_game(&board, &history)
         };
         let Some(m) = m else { break };
         assert!(board.is_legal(m));
         board.make_move(m);
+        history.push(m);
         plies += 1;
     }
     let winner = board.winner().unwrap();

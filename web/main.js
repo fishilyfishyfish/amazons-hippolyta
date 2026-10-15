@@ -13,6 +13,8 @@ const els = {
   hint: document.getElementById('hint'),
   moves: document.getElementById('moves'),
   opponent: document.getElementById('opponent'),
+  level: document.getElementById('level'),
+  levelLabel: document.getElementById('levelLabel'),
   color: document.getElementById('color'),
   newGame: document.getElementById('newGame'),
   undo: document.getElementById('undo'),
@@ -162,6 +164,16 @@ try {
   const m = localStorage.getItem('mode');
   if (['play', 'coach', 'analysis', 'book'].includes(m)) settings.mode = m;
 } catch {}
+// Difficulty 1–5 of the engine opponent (play and coach). 1–3 are
+// human-like players, 4 a short search, 5 the full engine. The per-game
+// seed gives each game of a human-like level its own style.
+const LEVEL_NAMES = ['', '입문', '초급', '중급', '상급', '최강'];
+let gameSeed = Math.floor(Math.random() * 2 ** 32);
+try {
+  const l = localStorage.getItem('level');
+  if (l && els.level.querySelector(`option[value="${l}"]`)) els.level.value = l;
+} catch {}
+const level = () => Number(els.level.value) || 5;
 let lastAiInfo = null;
 
 // Every position the worker reported, by history key, so earlier positions
@@ -214,6 +226,7 @@ async function run(type, args) {
 
 async function maybeAiTurn() {
   if (!state || state.over || isHumanTurn()) return;
+  if (level() < 5) return levelAiTurn();
   const my = epoch;
   const ms = settings.opponent.split(':')[1];
   busy = true;
@@ -237,6 +250,43 @@ async function maybeAiTurn() {
   if (my !== epoch) return;
   if (coachOn() && isHumanTurn()) coachPrepare();
   if (coachOn()) coachAfterAi(before, info, info.best.sq, my);
+  maybeAiTurn();
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A weaker opponent (levels 1–4): the worker picks the move at once; a short
+// pause keeps it from answering instantly. In a friendly game the position
+// still needs a full-strength analysis (the "after" of the human's move and
+// the "before" of the AI's), which the helper workers run meanwhile.
+async function levelAiTurn() {
+  const my = epoch;
+  const lv = level();
+  busy = true;
+  render();
+  const before = Array.from(state.history);
+  if (coachOn()) analyzeInBackground(before);
+  els.aiInfo.textContent = `상대: 난이도 ${lv} · ${LEVEL_NAMES[lv]}`;
+  const think = 500 + Math.random() * (lv >= 4 ? 1200 : 900);
+  let move;
+  try {
+    [move] = await Promise.all([
+      call('levelMove', { level: lv, gameSeed, moveSeed: Math.floor(Math.random() * 2 ** 32) }).then((r) => r.result),
+      sleep(think),
+    ]);
+  } catch (err) {
+    showError(err.message);
+  }
+  if (my !== epoch) return;
+  if (!move || move.length !== 3) {
+    busy = false;
+    render();
+    return;
+  }
+  await run('play', { move });
+  if (my !== epoch) return;
+  if (coachOn() && isHumanTurn()) coachPrepare();
+  if (coachOn()) coachAfterAi(before, null, move, my);
   maybeAiTurn();
 }
 
@@ -588,12 +638,14 @@ els.cancel.addEventListener('click', () => {
 async function newGame() {
   settings.opponent = isAnalysis() ? 'analysis' : isBook() ? 'book' : settings.mode === 'coach' ? ENGINE : els.opponent.value;
   settings.human = Number(els.color.value);
+  gameSeed = Math.floor(Math.random() * 2 ** 32);
   for (const b of els.modes) {
     const on = b.dataset.mode === settings.mode;
     b.classList.toggle('on', on);
     b.setAttribute('aria-selected', String(on));
   }
   els.opponentLabel.hidden = settings.mode !== 'play';
+  els.levelLabel.hidden = !(settings.mode === 'coach' || (settings.mode === 'play' && settings.opponent !== 'human'));
   els.colorLabel.hidden = isAnalysis() || isBook() || settings.opponent === 'human';
   els.bookPanel.hidden = !isBook();
   lastAiInfo = null;
@@ -618,6 +670,11 @@ async function newGame() {
 
 els.newGame.addEventListener('click', newGame);
 els.opponent.addEventListener('change', newGame);
+// A new level applies from the opponent's next move; the game goes on.
+els.level.addEventListener('change', () => {
+  try { localStorage.setItem('level', els.level.value); } catch {}
+  els.level.blur();
+});
 els.color.addEventListener('change', newGame);
 
 document.addEventListener('keydown', (e) => {
@@ -839,7 +896,7 @@ function evalCard(ex, n, mv, who = '') {
   const win = /이기는 수/.test(ex.summary);
   const label = win ? '이기는 수' : GRADE_LABEL[ex.grade] || ex.label;
   const head = win ? ex.summary
-    : who === '엔진 수' && ex.grade === 'best' ? '엔진이 이 국면에서 고른 최선의 수예요.'
+    : who === '상대 수' && ex.grade === 'best' ? '이 국면의 최선의 수예요.'
     : GRADE_HEAD[ex.grade] || ex.summary;
   const toWhite = (p) => (mover === 0 ? p : 1 - p);
   const a = Math.round(100 * toWhite(ex.pAfter));
@@ -1054,7 +1111,12 @@ const coachOn = () => settings.mode === 'coach';
 
 // Starts the background analysis of the current position (human to move).
 function coachPrepare() {
-  const hist = Array.from(state.history);
+  analyzeInBackground(Array.from(state.history));
+}
+
+// Helper-worker analysis of `hist`, registered in `pendingAnalysis` so
+// explanations can wait for it.
+function analyzeInBackground(hist) {
   const key = hkey(hist);
   if (analysisCache.has(key) || pendingAnalysis.has(key)) return;
   const p = parallelSearch(ANALYSIS_MS, hist, true).then((info) => {
@@ -1110,7 +1172,7 @@ function renderCoach() {
   const card = (i) => {
     const key = hkey(H.slice(0, 3 * (i + 1)));
     const ex = explainCache.get(key) || null;
-    const who = i % 2 === settings.human ? '내 수' : '엔진 수';
+    const who = i % 2 === settings.human ? '내 수' : '상대 수';
     if (!ex && !explaining.has(key) && !pendingAnalysis.size && !coachBusy && !busy) return '';
     return evalCard(ex, i + 1, H.slice(3 * i, 3 * i + 3), who);
   };
